@@ -1,0 +1,6 @@
+{
+  "summary":  "Implementation plan for Yaad Reminder AI: an offline Persian voice-first reminder and note-taking Android MVP (Kotlin, MVVM, Room, Vosk, Jetpack Compose) paired with an interactive RTL mobile preview, live Persian rule-based NLP test bench, and staged Kotlin architecture source explorer.",
+  "updatedAt":  "2026-10-28T22:43:40.329653741Z",
+  "requestFeedback":  true,
+  "userFacing":  true
+}

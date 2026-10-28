@@ -1,0 +1,6 @@
+{
+  "name": "Yaad reminder AI",
+  "description": "Minimalist offline Persian voice reminder and note-taking Android MVP (Kotlin, MVVM, Room, Vosk, Jetpack Compose) with interactive RTL simulator and rule-based NLP test bench.",
+  "requestFramePermissions": ["microphone"],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
