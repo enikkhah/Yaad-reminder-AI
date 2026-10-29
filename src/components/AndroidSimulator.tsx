@@ -39,13 +39,23 @@ export const AndroidSimulator: React.FC<AndroidSimulatorProps> = ({
   const [isListening, setIsListening] = useState(false);
   const [partialSpeech, setPartialSpeech] = useState('');
   const [sampleIndex, setSampleIndex] = useState(0);
-  const [voiceModeLabel, setVoiceModeLabel] = useState<string>('Vosk Offline fa-IR');
+  const [voiceModeLabel, setVoiceModeLabel] = useState<string>('SpeechRecognizer (fa-IR)');
   const [snackbarMessage, setSnackbarMessage] = useState<string | null>(null);
 
   const inputRef = useRef<HTMLInputElement | null>(null);
   const voiceTimerRef = useRef<number | null>(null);
   const snackbarTimerRef = useRef<number | null>(null);
   const recognitionRef = useRef<any>(null);
+
+  const showSnackbar = (msg: string) => {
+    setSnackbarMessage(msg);
+    if (snackbarTimerRef.current) {
+      window.clearTimeout(snackbarTimerRef.current);
+    }
+    snackbarTimerRef.current = window.setTimeout(() => {
+      setSnackbarMessage(null);
+    }, 3800);
+  };
 
   const commitItemWithAlarmCheck = (rawText: string) => {
     const clean = rawText.trim();
@@ -55,13 +65,7 @@ export const AndroidSimulator: React.FC<AndroidSimulatorProps> = ({
 
     if (processed.category === 'REMINDER' && processed.extractedTime) {
       const formattedClock = formatPersianClockOnly(processed.extractedTime);
-      setSnackbarMessage(`آلارم یادآوری برای ساعت ${formattedClock} تنظیم شد`);
-      if (snackbarTimerRef.current) {
-        window.clearTimeout(snackbarTimerRef.current);
-      }
-      snackbarTimerRef.current = window.setTimeout(() => {
-        setSnackbarMessage(null);
-      }, 3800);
+      showSnackbar(`آلارم یادآوری برای ساعت ${formattedClock} تنظیم شد`);
     }
   };
 
@@ -106,8 +110,12 @@ export const AndroidSimulator: React.FC<AndroidSimulatorProps> = ({
     setIsListening(false);
   };
 
-  const startSimulatedVoskCapture = () => {
-    setVoiceModeLabel('Vosk Offline Sim (fa-IR)');
+  const startSimulatedSpeechRecognizerCapture = () => {
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      showSnackbar('قطعی ارتباط با اینترنت: لطفاً اتصال اینترنت خود را بررسی کرده و دوباره تلاش کنید.');
+      return;
+    }
+    setVoiceModeLabel('SpeechRecognizer (fa-IR)');
     const targetPhrase = VOSK_PERSIAN_VOICE_SAMPLES[sampleIndex % VOSK_PERSIAN_VOICE_SAMPLES.length];
     setSampleIndex((prev) => prev + 1);
     setIsExpanded(true);
@@ -144,7 +152,12 @@ export const AndroidSimulator: React.FC<AndroidSimulatorProps> = ({
       return;
     }
 
-    // Try real Web Speech API (fa-IR) first; fall back seamlessly to offline Vosk simulation
+    if (typeof navigator !== 'undefined' && navigator.onLine === false) {
+      showSnackbar('خطا در اتصال به اینترنت: لطفاً اتصال اینترنت خود را بررسی کرده و دوباره تلاش کنید.');
+      return;
+    }
+
+    // Try real Web Speech API (fa-IR) first; fall back seamlessly to simulated SpeechRecognizer stream
     const SpeechRecognitionApi =
       (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
 
@@ -158,7 +171,7 @@ export const AndroidSimulator: React.FC<AndroidSimulatorProps> = ({
         let latestTranscript = '';
 
         recognition.onstart = () => {
-          setVoiceModeLabel('میکروفون زنده (fa-IR)');
+          setVoiceModeLabel('SpeechRecognizer آنلاین (fa-IR)');
           setIsExpanded(true);
           setIsListening(true);
           setPartialSpeech('');
@@ -175,7 +188,7 @@ export const AndroidSimulator: React.FC<AndroidSimulatorProps> = ({
 
         recognition.onerror = () => {
           stopVoiceCapture();
-          startSimulatedVoskCapture();
+          startSimulatedSpeechRecognizerCapture();
         };
 
         recognition.onend = () => {
@@ -192,11 +205,11 @@ export const AndroidSimulator: React.FC<AndroidSimulatorProps> = ({
         recognition.start();
         return;
       } catch {
-        // Fallback to simulated Vosk Persian stream
+        // Fallback to simulated Persian stream
       }
     }
 
-    startSimulatedVoskCapture();
+    startSimulatedSpeechRecognizerCapture();
   };
 
   const handleSubmit = (e?: React.FormEvent) => {
@@ -269,7 +282,7 @@ export const AndroidSimulator: React.FC<AndroidSimulatorProps> = ({
         <div className="flex items-center justify-between px-6 pt-3 pb-2 text-[11px] text-stone-400 font-mono-tabular select-none border-b border-stone-100">
           <span>۱۰:۴۲</span>
           <span className="font-persian text-stone-500 font-medium">
-            یاد · {isListening ? voiceModeLabel : 'آفلاین (Room + Vosk)'}
+            یاد · {isListening ? voiceModeLabel : 'SpeechRecognizer آنلاین (fa-IR)'}
           </span>
           <span>100%</span>
         </div>

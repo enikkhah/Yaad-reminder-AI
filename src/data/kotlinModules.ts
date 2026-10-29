@@ -892,20 +892,23 @@ fun TimelineScreen(
   {
     id: 'persian-speech-recognizer',
     stage: 2,
-    layer: 'Native Offline Persian Speech-to-Text (SpeechRecognizer)',
+    layer: 'Native Online Persian Speech-to-Text (SpeechRecognizer)',
     fileName: 'PersianSpeechRecognizer.kt',
     packagePath: 'app/src/main/java/com/yaad/reminder/speech/PersianSpeechRecognizer.kt',
     summary:
-      'Uses Android native SpeechRecognizer with RecognizerIntent.EXTRA_PREFER_OFFLINE = true and explicit Persian ("fa-IR") language configuration plus comprehensive error handling.',
+      'Uses Android native SpeechRecognizer in online mode with explicit Persian ("fa-IR") language configuration, internet connectivity verification, and Persian network error messages.',
     highlights: [
-      'Sets RecognizerIntent.EXTRA_PREFER_OFFLINE = true for 100% offline speech recognition',
-      'Explicitly configures RecognizerIntent.EXTRA_LANGUAGE = "fa-IR"',
-      'Handles ERROR_LANGUAGE_NOT_SUPPORTED / ERROR_LANGUAGE_UNAVAILABLE when offline Persian pack is missing',
+      'Explicitly sets RecognizerIntent.EXTRA_LANGUAGE = "fa-IR" for high-accuracy online Persian recognition',
+      'Checks internet connectivity before starting and handles ERROR_NETWORK / ERROR_NETWORK_TIMEOUT with clear Persian alerts',
+      'Streams partial and final speech directly to TimelineViewModel -> TextProcessor -> AlarmScheduler',
     ],
     code: `package com.yaad.reminder.speech
 
 import android.content.Context
 import android.content.Intent
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -937,7 +940,15 @@ class PersianSpeechRecognizer(
 
     fun startListening() {
         runOnMain {
+            if (!isInternetAvailable()) {
+                isListening = false
+                onListeningChanged(false)
+                onErrorMessage("خطا در اتصال به اینترنت: لطفاً اتصال اینترنت خود را بررسی کرده و دوباره تلاش کنید.")
+                return@runOnMain
+            }
+
             if (!SpeechRecognizer.isRecognitionAvailable(context)) {
+                isListening = false
                 onListeningChanged(false)
                 onErrorMessage(
                     "سرویس تشخیص گفتار روی این دستگاه فعال نیست. لطفاً برنامه Google را فعال یا به‌روزرسانی کنید."
@@ -952,7 +963,7 @@ class PersianSpeechRecognizer(
                     }
                 }
 
-                val recognizerIntent = createOfflinePersianRecognizerIntent()
+                val recognizerIntent = createOnlinePersianRecognizerIntent()
                 isListening = true
                 onListeningChanged(true)
                 speechRecognizer?.startListening(recognizerIntent)
@@ -964,23 +975,38 @@ class PersianSpeechRecognizer(
         }
     }
 
-    private fun createOfflinePersianRecognizerIntent(): Intent {
+    private fun createOnlinePersianRecognizerIntent(): Intent {
         return Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
             putExtra(
                 RecognizerIntent.EXTRA_LANGUAGE_MODEL,
                 RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
             )
-            // Requirement 2: Explicitly set input language to Persian (fa-IR)
+            // Requirement 1: Explicitly set input language to Persian (fa-IR)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, PERSIAN_LOCALE)
             putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, PERSIAN_LOCALE)
             putExtra(RecognizerIntent.EXTRA_ONLY_RETURN_LANGUAGE_PREFERENCE, PERSIAN_LOCALE)
 
-            // Requirement 1: Enforce offline speech recognition
-            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
+            // Online mode for high Persian accuracy
+            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, false)
 
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
             putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
+        }
+    }
+
+    @Suppress("DEPRECATION")
+    private fun isInternetAvailable(): Boolean {
+        val cm = context.getSystemService(Context.CONNECTIVITY_SERVICE) as? ConnectivityManager
+            ?: return false
+
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+            val network = cm.activeNetwork ?: return false
+            val capabilities = cm.getNetworkCapabilities(network) ?: return false
+            capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
+        } else {
+            val activeNetworkInfo = cm.activeNetworkInfo
+            activeNetworkInfo != null && activeNetworkInfo.isConnected
         }
     }
 
@@ -1037,24 +1063,30 @@ class PersianSpeechRecognizer(
         if (error == SpeechRecognizer.ERROR_CLIENT && !wasListening) return
 
         val message = when (error) {
-            SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED,
-            SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE -> {
-                "بسته زبان فارسی (fa-IR) برای تشخیص گفتار آفلاین روی گوشی نصب نیست. لطفاً از تنظیمات گوگل (Offline speech recognition) زبان فارسی را دانلود کنید."
-            }
             SpeechRecognizer.ERROR_NETWORK,
             SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> {
-                "برای کارکرد آفلاین بدون اینترنت، لطفاً بسته زبان فارسی آفلاین را در تنظیمات تشخیص گفتار گوشی دانلود کنید."
+                "قطعی ارتباط با اینترنت: لطفاً اتصال اینترنت خود را بررسی کرده و دوباره تلاش کنید."
+            }
+            SpeechRecognizer.ERROR_SERVER,
+            SpeechRecognizer.ERROR_SERVER_DISCONNECTED -> {
+                "خطا در برقراری ارتباط با سرور تشخیص گفتار. لطفاً اتصال اینترنت خود را بررسی کنید."
+            }
+            SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED,
+            SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE -> {
+                "زبان فارسی (fa-IR) توسط سرویس تشخیص گفتار دستگاه پشتیبانی نمی‌شود."
             }
             SpeechRecognizer.ERROR_NO_MATCH -> "عبارتی تشخیص داده نشد. لطفاً واضح‌تر صحبت کنید."
             SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "صدایی دریافت نشد. لطفاً پس از زدن دکمه میکروفون صحبت کنید."
             SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "مجوز دسترسی به میکروفون تایید نشده است."
             SpeechRecognizer.ERROR_AUDIO -> "خطا در ضبط صدا از میکروفون دستگاه."
             SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "سرویس تشخیص گفتار مشغول است. چند ثانیه دیگر امتحان کنید."
-            SpeechRecognizer.ERROR_SERVER,
-            SpeechRecognizer.ERROR_SERVER_DISCONNECTED -> {
-                "ارتباط با موتور تشخیص گفتار قطع شد. از نصب بودن بسته آفلاین فارسی اطمینان حاصل کنید."
+            else -> {
+                if (!isInternetAvailable()) {
+                    "قطعی ارتباط با اینترنت: لطفاً اتصال شبکه خود را بررسی کنید."
+                } else {
+                    "خطا در تشخیص گفتار (کد: \$error). لطفاً دوباره تلاش کنید."
+                }
             }
-            else -> "خطا در تشخیص گفتار (کد: \$error). از نصب بودن زبان فارسی آفلاین مطمئن شوید."
         }
 
         onErrorMessage(message)
@@ -1087,7 +1119,7 @@ class PersianSpeechRecognizer(
     summary:
       'Connects Room, ItemRepository, AlarmScheduler, TimelineViewModel, PersianSpeechRecognizer, and RECORD_AUDIO / POST_NOTIFICATIONS runtime permissions.',
     highlights: [
-      'Initializes PersianSpeechRecognizer (native offline SpeechRecognizer)',
+      'Initializes PersianSpeechRecognizer (native online fa-IR SpeechRecognizer)',
       'Requests POST_NOTIFICATIONS on Android 13+ and RECORD_AUDIO on microphone tap',
     ],
     code: `package com.yaad.reminder
@@ -1194,18 +1226,21 @@ class MainActivity : ComponentActivity() {
   {
     id: 'android-manifest',
     stage: 2,
-    layer: 'AndroidManifest.xml (SpeechRecognizer Queries & Alarm Receiver)',
+    layer: 'AndroidManifest.xml (INTERNET, SpeechRecognizer & AlarmReceiver)',
     fileName: 'AndroidManifest.xml',
     packagePath: 'app/src/main/AndroidManifest.xml',
     summary:
-      'Declares RECORD_AUDIO, SCHEDULE_EXACT_ALARM, USE_EXACT_ALARM, POST_NOTIFICATIONS, Android 11+ <queries> for RecognitionService, and .AlarmReceiver.',
+      'Declares INTERNET, ACCESS_NETWORK_STATE, RECORD_AUDIO, SCHEDULE_EXACT_ALARM, USE_EXACT_ALARM, POST_NOTIFICATIONS, Android 11+ <queries> for RecognitionService, and .AlarmReceiver.',
     highlights: [
+      'Registers android.permission.INTERNET and ACCESS_NETWORK_STATE for online Persian SpeechRecognizer',
       'Includes <queries> for android.speech.RecognitionService required on Android 11+',
       'Registers <receiver android:name=".AlarmReceiver" android:exported="false" />',
     ],
     code: `<?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
+    <uses-permission android:name="android.permission.INTERNET" />
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE" />
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
