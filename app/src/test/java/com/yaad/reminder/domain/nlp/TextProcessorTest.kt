@@ -1,6 +1,7 @@
 package com.yaad.reminder.domain.nlp
 
 import com.yaad.reminder.data.local.ItemCategory
+import com.yaad.reminder.domain.calendar.JalaliCalendar
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
@@ -14,6 +15,32 @@ class TextProcessorTest {
         assertNotNull(epoch)
         val formattedBack = TextProcessor.formatEpochMillisToDateTime(epoch!!)
         assertEquals("2026/10/29 08:30", formattedBack)
+    }
+
+    @Test
+    fun `parses Shamsi formatted date string and converts back to same Shamsi date`() {
+        val epoch = TextProcessor.parseDateTimeToEpochMillis("1405/08/10 09:15")
+        assertNotNull(epoch)
+        val jalali = JalaliCalendar.fromEpochMillis(epoch!!)
+        assertEquals(1405, jalali.year)
+        assertEquals(8, jalali.month)
+        assertEquals(10, jalali.day)
+        assertEquals(9, jalali.hour)
+        assertEquals(15, jalali.minute)
+    }
+
+    @Test
+    fun `extracts spoken Shamsi month and day with hour`() {
+        val input = "یادم باشه ۱۵ آبان ۱۴۰۵ ساعت ۱۰ صبح جلسه دارم"
+        val result = TextProcessor.process(input, referenceTimeMillis = 1730000000000L)
+
+        assertEquals(ItemCategory.REMINDER, result.category)
+        assertNotNull(result.extractedTimeMillis)
+        val jalali = JalaliCalendar.fromEpochMillis(result.extractedTimeMillis!!)
+        assertEquals(1405, jalali.year)
+        assertEquals(8, jalali.month)
+        assertEquals(15, jalali.day)
+        assertEquals(10, jalali.hour)
     }
 
     @Test

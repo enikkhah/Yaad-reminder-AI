@@ -21,20 +21,33 @@ class ItemRepository(
 
     /**
      * Processes raw Persian input, saves the [ItemEntity] to Room, and immediately invokes
-     * [AlarmScheduler.schedule] when the intent is [ItemCategory.REMINDER] (or has an extracted time).
+     * [AlarmScheduler.schedule] when the intent is [ItemCategory.REMINDER] or has a Shamsi alarm timestamp.
      */
-    suspend fun processAndSave(rawText: String): SaveAndScheduleResult? {
+    suspend fun processAndSave(
+        rawText: String,
+        explicitShamsiEpochMillis: Long? = null
+    ): SaveAndScheduleResult? {
         val trimmed = rawText.trim()
         if (trimmed.isEmpty()) return null
 
         val processed = TextProcessor.process(trimmed)
-        val epochMillis = processed.formattedDateTime?.let {
-            TextProcessor.parseDateTimeToEpochMillis(it)
-        } ?: processed.extractedTimeMillis
+        val epochMillis = explicitShamsiEpochMillis
+            ?: processed.formattedDateTime?.let {
+                TextProcessor.parseDateTimeToEpochMillis(it)
+            }
+            ?: processed.extractedTimeMillis
+
+        val resolvedCategory = if (explicitShamsiEpochMillis != null &&
+            processed.category == ItemCategory.UNCATEGORIZED
+        ) {
+            ItemCategory.REMINDER
+        } else {
+            processed.category
+        }
 
         val entityToInsert = ItemEntity(
             originalText = processed.originalText,
-            category = processed.category,
+            category = resolvedCategory,
             extractedTime = epochMillis,
             createdAt = System.currentTimeMillis()
         )
@@ -58,6 +71,26 @@ class ItemRepository(
             alarmScheduled = isScheduled,
             scheduledEpochMillis = savedItem.extractedTime
         )
+    }
+
+    /**
+     * Updates or sets a Shamsi alarm timestamp on an existing item and schedules it in [AlarmScheduler].
+     */
+    suspend fun rescheduleShamsiAlarm(item: ItemEntity, newEpochMillis: Long): Boolean {
+        itemDao.updateExtractedTime(item.id, newEpochMillis)
+        return alarmScheduler.schedule(
+            triggerAtMillis = newEpochMillis,
+            message = item.originalText,
+            alarmId = item.id
+        )
+    }
+
+    /**
+     * Cancels an active alarm for an existing item without deleting the note itself.
+     */
+    suspend fun cancelItemAlarm(itemId: Long) {
+        alarmScheduler.cancelReminder(itemId)
+        itemDao.updateExtractedTime(itemId, null)
     }
 
     suspend fun deleteItem(id: Long) {

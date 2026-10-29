@@ -6,6 +6,7 @@ import androidx.lifecycle.viewModelScope
 import com.yaad.reminder.AlarmScheduler
 import com.yaad.reminder.data.local.ItemEntity
 import com.yaad.reminder.data.repository.ItemRepository
+import com.yaad.reminder.domain.calendar.JalaliCalendar
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -16,15 +17,13 @@ import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
-import java.text.SimpleDateFormat
-import java.util.Date
-import java.util.Locale
 
 data class InputUiState(
     val isExpanded: Boolean = false,
     val draftText: String = "",
     val isListening: Boolean = false,
-    val partialSpeechText: String = ""
+    val partialSpeechText: String = "",
+    val customShamsiAlarmMillis: Long? = null
 )
 
 class TimelineViewModel(
@@ -54,7 +53,7 @@ class TimelineViewModel(
     fun onCollapseInput() {
         _inputState.update {
             if (it.draftText.isBlank() && !it.isListening) {
-                it.copy(isExpanded = false, partialSpeechText = "")
+                it.copy(isExpanded = false, partialSpeechText = "", customShamsiAlarmMillis = null)
             } else {
                 it
             }
@@ -70,26 +69,61 @@ class TimelineViewModel(
         }
     }
 
+    fun onSetCustomShamsiAlarmForDraft(epochMillis: Long?) {
+        _inputState.update {
+            it.copy(
+                customShamsiAlarmMillis = epochMillis,
+                isExpanded = true
+            )
+        }
+    }
+
     fun onSubmitText(textToSubmit: String = _inputState.value.draftText) {
         val clean = textToSubmit.trim()
         if (clean.isEmpty()) return
 
+        val explicitAlarmMillis = _inputState.value.customShamsiAlarmMillis
+
         viewModelScope.launch {
-            val result = repository.processAndSave(clean)
+            val result = repository.processAndSave(
+                rawText = clean,
+                explicitShamsiEpochMillis = explicitAlarmMillis
+            )
             _inputState.update {
                 it.copy(
                     draftText = "",
                     partialSpeechText = "",
                     isExpanded = false,
-                    isListening = false
+                    isListening = false,
+                    customShamsiAlarmMillis = null
                 )
             }
 
             if (result != null && result.alarmScheduled && result.scheduledEpochMillis != null) {
-                val formatter = SimpleDateFormat("yyyy/MM/dd HH:mm", Locale("fa", "IR"))
-                val formattedTime = formatter.format(Date(result.scheduledEpochMillis))
-                _snackbarMessages.send("آلارم یادآوری برای $formattedTime تنظیم شد")
+                val shamsiFormatted = JalaliCalendar
+                    .fromEpochMillis(result.scheduledEpochMillis)
+                    .formatFullWithWeekday(usePersianDigits = true)
+                _snackbarMessages.send("آلارم شمسی تنظیم شد: $shamsiFormatted")
             }
+        }
+    }
+
+    fun onRescheduleItemShamsiAlarm(item: ItemEntity, newEpochMillis: Long) {
+        viewModelScope.launch {
+            val scheduled = repository.rescheduleShamsiAlarm(item, newEpochMillis)
+            if (scheduled) {
+                val shamsiFormatted = JalaliCalendar
+                    .fromEpochMillis(newEpochMillis)
+                    .formatFullWithWeekday(usePersianDigits = true)
+                _snackbarMessages.send("آلارم به تاریخ شمسی $shamsiFormatted بروزرسانی شد")
+            }
+        }
+    }
+
+    fun onCancelItemAlarm(item: ItemEntity) {
+        viewModelScope.launch {
+            repository.cancelItemAlarm(item.id)
+            _snackbarMessages.send("آلارم یادآور غیرفعال شد")
         }
     }
 

@@ -176,17 +176,86 @@ abstract class YaadDatabase : RoomDatabase() {
 }`,
   },
   {
+    id: 'jalali-calendar',
+    stage: 1,
+    layer: 'Persian Shamsi (Jalali) Calendar Engine',
+    fileName: 'JalaliCalendar.kt',
+    packagePath: 'app/src/main/java/com/yaad/reminder/domain/calendar/JalaliCalendar.kt',
+    summary:
+      'Pure Kotlin Jalali (Solar Hijri / هجری شمسی) calendar converter, Shamsi date formatter, and live alarm countdown duration calculator.',
+    highlights: [
+      'Bidirectional Gregorian <-> Jalali (jy, jm, jd) conversion with leap year calculation',
+      'Converts Shamsi dates & clock times directly to Epoch Milliseconds for AlarmManager',
+      'Formats live "اکنون" Shamsi dates and calculates remaining time ("۲ ساعت و ۱۵ دقیقه دیگر")',
+    ],
+    code: `package com.yaad.reminder.domain.calendar
+
+import java.util.Calendar
+import kotlin.math.abs
+
+data class JalaliDateTime(
+    val year: Int,
+    val month: Int, // 1..12 (فروردین..اسفند)
+    val day: Int,   // 1..31
+    val hour: Int = 0,
+    val minute: Int = 0,
+    val dayOfWeek: Int = 0
+) {
+    val monthName: String get() = JalaliCalendar.monthName(month)
+    val weekdayName: String get() = JalaliCalendar.weekdayName(dayOfWeek)
+
+    fun formatFullWithWeekday(usePersianDigits: Boolean = true): String {
+        val timePart = String.format("%02d:%02d", hour, minute)
+        val raw = "\$weekdayName \$day \$monthName \$year · ساعت \$timePart"
+        return if (usePersianDigits) JalaliCalendar.toPersianDigits(raw) else raw
+    }
+}
+
+object JalaliCalendar {
+    val MONTH_NAMES = listOf(
+        "فروردین", "اردیبهشت", "خرداد", "تیر", "مرداد", "شهریور",
+        "مهر", "آبان", "آذر", "دی", "بهمن", "اسفند"
+    )
+
+    fun fromEpochMillis(epochMillis: Long): JalaliDateTime {
+        val cal = Calendar.getInstance().apply { timeInMillis = epochMillis }
+        val (jy, jm, jd) = gregorianToJalali(
+            cal.get(Calendar.YEAR),
+            cal.get(Calendar.MONTH) + 1,
+            cal.get(Calendar.DAY_OF_MONTH)
+        )
+        return JalaliDateTime(
+            year = jy, month = jm, day = jd,
+            hour = cal.get(Calendar.HOUR_OF_DAY),
+            minute = cal.get(Calendar.MINUTE),
+            dayOfWeek = cal.get(Calendar.DAY_OF_WEEK)
+        )
+    }
+
+    fun toEpochMillis(
+        jalaliYear: Int, jalaliMonth: Int, jalaliDay: Int,
+        hour: Int = 9, minute: Int = 0
+    ): Long {
+        val (gy, gm, gd) = jalaliToGregorian(jalaliYear, jalaliMonth, jalaliDay)
+        return Calendar.getInstance().apply {
+            set(gy, gm - 1, gd, hour, minute, 0)
+            set(Calendar.MILLISECOND, 0)
+        }.timeInMillis
+    }
+}`,
+  },
+  {
     id: 'text-processor',
     stage: 1,
-    layer: 'Static Processing Brain (Rule-Based NLP)',
+    layer: 'Static Processing Brain (Shamsi Rule-Based NLP)',
     fileName: 'TextProcessor.kt',
     packagePath: 'app/src/main/java/com/yaad/reminder/domain/nlp/TextProcessor.kt',
     summary:
-      'Rule-based Persian NLP utility class performing static keyword categorization and Regex relative time/date extraction into epoch milliseconds.',
+      'Rule-based Persian NLP utility class performing static keyword categorization and Regex extraction of Shamsi dates ("۱۵ آبان", "۱۴۰۵/۰۸/۱۰") and relative times into epoch milliseconds.',
     highlights: [
-      'Exact static keyword lists for REMINDER, OCCASION, and IDEA with UNCATEGORIZED fallback',
-      'Normalizes Persian (۰-۹) and Arabic (٠-٩) numerals plus ZWNJ half-spaces',
-      'Extracts "فردا", "پس‌فردا", "امروز", "امشب", and "ساعت ۸" / "ساعت ۱۴:۳۰" into epoch millis',
+      'Extracts explicit Shamsi month names (فروردین..اسفند) and numeric Shamsi dates (1405/08/10)',
+      'Normalizes Persian (۰-۹) and Arabic (٠-٩) numerals plus spoken Persian number words',
+      'Extracts "فردا", "پس‌فردا", "امروز", "امشب", and "ساعت ۸" / "۲ ساعت دیگر" into epoch millis',
     ],
     code: `package com.yaad.reminder.domain.nlp
 
