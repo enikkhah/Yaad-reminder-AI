@@ -9,16 +9,25 @@ import org.junit.Test
 class TextProcessorTest {
 
     @Test
+    fun `parses formatted yyyy_MM_dd HH_mm string to epoch milliseconds`() {
+        val epoch = TextProcessor.parseDateTimeToEpochMillis("2026/10/29 08:30")
+        assertNotNull(epoch)
+        val formattedBack = TextProcessor.formatEpochMillisToDateTime(epoch!!)
+        assertEquals("2026/10/29 08:30", formattedBack)
+    }
+
+    @Test
     fun `categorizes reminder and extracts Persian tomorrow and hour 8`() {
         val input = "یادم باشه فردا ساعت ۸ صبح بیدار شم"
         val result = TextProcessor.process(input, referenceTimeMillis = 1730000000000L)
 
         assertEquals(ItemCategory.REMINDER, result.category)
+        assertNotNull(result.formattedDateTime)
         assertNotNull(result.extractedTimeMillis)
     }
 
     @Test
-    fun `categorizes occasion keywords`() {
+    fun `categorizes occasion keywords and extracts time`() {
         val input = "تبریک تولد سارا فردا ساعت ۶ عصر"
         val result = TextProcessor.process(input, referenceTimeMillis = 1730000000000L)
 

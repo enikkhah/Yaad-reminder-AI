@@ -10,7 +10,6 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.core.content.ContextCompat
-import com.yaad.reminder.alarm.AlarmScheduler
 import com.yaad.reminder.data.local.YaadDatabase
 import com.yaad.reminder.data.repository.ItemRepository
 import com.yaad.reminder.speech.VoskVoiceManager
@@ -22,7 +21,8 @@ class MainActivity : ComponentActivity() {
     private val viewModel: TimelineViewModel by viewModels {
         val dao = YaadDatabase.getInstance(applicationContext).itemDao()
         val alarmScheduler = AlarmScheduler(applicationContext)
-        TimelineViewModel.Factory(ItemRepository(dao), alarmScheduler)
+        val repository = ItemRepository(dao, alarmScheduler)
+        TimelineViewModel.Factory(repository, alarmScheduler)
     }
 
     private lateinit var voskVoiceManager: VoskVoiceManager

@@ -3,8 +3,7 @@ package com.yaad.reminder.ui.timeline
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
-import com.yaad.reminder.alarm.AlarmScheduler
-import com.yaad.reminder.data.local.ItemCategory
+import com.yaad.reminder.AlarmScheduler
 import com.yaad.reminder.data.local.ItemEntity
 import com.yaad.reminder.data.repository.ItemRepository
 import kotlinx.coroutines.channels.Channel
@@ -47,6 +46,8 @@ class TimelineViewModel(
     private val _snackbarMessages = Channel<String>(Channel.BUFFERED)
     val snackbarMessages: Flow<String> = _snackbarMessages.receiveAsFlow()
 
+    fun canScheduleExactAlarms(): Boolean = alarmScheduler.canScheduleExactAlarms()
+
     fun onExpandInput() {
         _inputState.update { it.copy(isExpanded = true) }
     }
@@ -75,7 +76,7 @@ class TimelineViewModel(
         if (clean.isEmpty()) return
 
         viewModelScope.launch {
-            val savedItem = repository.processAndSave(clean)
+            val result = repository.processAndSave(clean)
             _inputState.update {
                 it.copy(
                     draftText = "",
@@ -85,17 +86,10 @@ class TimelineViewModel(
                 )
             }
 
-            // Immediately schedule an exact alarm if the saved item is a REMINDER with an extracted time
-            if (savedItem != null &&
-                savedItem.category == ItemCategory.REMINDER &&
-                savedItem.extractedTime != null
-            ) {
-                val isScheduled = alarmScheduler.scheduleExactReminder(savedItem)
-                if (isScheduled) {
-                    val formatter = SimpleDateFormat("HH:mm", Locale("fa", "IR"))
-                    val formattedTime = formatter.format(Date(savedItem.extractedTime))
-                    _snackbarMessages.send("آلارم یادآوری برای ساعت $formattedTime تنظیم شد")
-                }
+            if (result != null && result.alarmScheduled && result.scheduledEpochMillis != null) {
+                val formatter = SimpleDateFormat("yyyy/MM/dd HH:mm", Locale("fa", "IR"))
+                val formattedTime = formatter.format(Date(result.scheduledEpochMillis))
+                _snackbarMessages.send("آلارم یادآوری برای $formattedTime تنظیم شد")
             }
         }
     }
@@ -133,7 +127,6 @@ class TimelineViewModel(
 
     fun deleteItem(itemId: Long) {
         viewModelScope.launch {
-            alarmScheduler.cancelReminder(itemId)
             repository.deleteItem(itemId)
         }
     }

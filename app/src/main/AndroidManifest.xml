@@ -28,13 +28,8 @@
         </activity>
 
         <receiver
-            android:name=".alarm.AlarmReceiver"
-            android:enabled="true"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="com.yaad.reminder.ACTION_TRIGGER_REMINDER" />
-            </intent-filter>
-        </receiver>
+            android:name=".AlarmReceiver"
+            android:exported="false" />
     </application>
 
 </manifest>

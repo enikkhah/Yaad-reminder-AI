@@ -23,6 +23,12 @@ interface ItemDao {
     suspend fun insertItem(item: ItemEntity): Long
 
     /**
+     * Updates the scheduled alarm timestamp for an existing item.
+     */
+    @Query("UPDATE items SET extracted_time = :newTimeMillis WHERE id = :itemId")
+    suspend fun updateExtractedTime(itemId: Long, newTimeMillis: Long?)
+
+    /**
      * Removes an item by its primary key ID.
      */
     @Query("DELETE FROM items WHERE id = :itemId")

@@ -1,4 +1,4 @@
-package com.yaad.reminder.alarm
+package com.yaad.reminder
 
 import android.Manifest
 import android.app.NotificationChannel
@@ -8,15 +8,16 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
+import android.media.AudioAttributes
+import android.media.RingtoneManager
 import android.os.Build
 import androidx.core.app.NotificationCompat
 import androidx.core.app.NotificationManagerCompat
 import androidx.core.content.ContextCompat
-import com.yaad.reminder.MainActivity
-import com.yaad.reminder.R
 
 /**
- * BroadcastReceiver triggered at the exact scheduled time to post a high-priority Persian notification.
+ * BroadcastReceiver registered in AndroidManifest.xml as `<receiver android:name=".AlarmReceiver" android:exported="false" />`.
+ * Receives exact alarms from [AlarmScheduler] and dispatches a High-Priority Persian notification with alarm sound.
  */
 class AlarmReceiver : BroadcastReceiver() {
 
@@ -25,8 +26,8 @@ class AlarmReceiver : BroadcastReceiver() {
         const val EXTRA_ITEM_ID = "extra_item_id"
         const val EXTRA_ITEM_TEXT = "extra_item_text"
 
-        const val CHANNEL_ID = "yaad_high_priority_reminder_channel"
-        private const val CHANNEL_NAME = "یادآوری‌های یاد"
+        const val CHANNEL_ID = "yaad_high_priority_alarm_channel"
+        private const val CHANNEL_NAME = "آلارم یادآوری‌های یاد"
         private const val CHANNEL_DESCRIPTION = "اعلان‌های با اولویت بالا برای یادآوری‌های زمان‌بندی‌شده"
     }
 
@@ -40,12 +41,16 @@ class AlarmReceiver : BroadcastReceiver() {
         val launchIntent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
         }
+        val requestCode = (itemId xor (itemId ushr 32)).toInt()
         val contentPendingIntent = PendingIntent.getActivity(
             context,
-            itemId.toInt(),
+            requestCode,
             launchIntent,
             PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
         )
+
+        val alarmSoundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+            ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
 
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_launcher)
@@ -54,6 +59,7 @@ class AlarmReceiver : BroadcastReceiver() {
             .setStyle(NotificationCompat.BigTextStyle().bigText(reminderText))
             .setPriority(NotificationCompat.PRIORITY_HIGH)
             .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setSound(alarmSoundUri)
             .setDefaults(NotificationCompat.DEFAULT_ALL)
             .setAutoCancel(true)
             .setContentIntent(contentPendingIntent)
@@ -67,7 +73,7 @@ class AlarmReceiver : BroadcastReceiver() {
             if (!hasPermission) return
         }
 
-        NotificationManagerCompat.from(context).notify(itemId.toInt(), notification)
+        NotificationManagerCompat.from(context).notify(requestCode, notification)
     }
 
     private fun ensureHighPriorityChannel(context: Context) {
@@ -75,6 +81,13 @@ class AlarmReceiver : BroadcastReceiver() {
             val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
             val existing = manager.getNotificationChannel(CHANNEL_ID)
             if (existing == null) {
+                val alarmSoundUri = RingtoneManager.getDefaultUri(RingtoneManager.TYPE_ALARM)
+                    ?: RingtoneManager.getDefaultUri(RingtoneManager.TYPE_NOTIFICATION)
+                val audioAttributes = AudioAttributes.Builder()
+                    .setUsage(AudioAttributes.USAGE_ALARM)
+                    .setContentType(AudioAttributes.CONTENT_TYPE_SONIFICATION)
+                    .build()
+
                 val channel = NotificationChannel(
                     CHANNEL_ID,
                     CHANNEL_NAME,
@@ -82,6 +95,7 @@ class AlarmReceiver : BroadcastReceiver() {
                 ).apply {
                     description = CHANNEL_DESCRIPTION
                     enableVibration(true)
+                    setSound(alarmSoundUri, audioAttributes)
                 }
                 manager.createNotificationChannel(channel)
             }
