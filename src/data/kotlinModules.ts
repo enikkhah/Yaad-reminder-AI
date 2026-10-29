@@ -890,269 +890,191 @@ fun TimelineScreen(
 }`,
   },
   {
-    id: 'vosk-voice-manager',
+    id: 'persian-speech-recognizer',
     stage: 2,
-    layer: 'Offline Persian Speech-to-Text (16kHz AudioRecord + DSP + Vosk)',
-    fileName: 'VoskVoiceManager.kt',
-    packagePath: 'app/src/main/java/com/yaad/reminder/speech/VoskVoiceManager.kt',
+    layer: 'Native Offline Persian Speech-to-Text (SpeechRecognizer)',
+    fileName: 'PersianSpeechRecognizer.kt',
+    packagePath: 'app/src/main/java/com/yaad/reminder/speech/PersianSpeechRecognizer.kt',
     summary:
-      'Hardware-tuned 16kHz CHANNEL_IN_MONO AudioRecord pipeline with Android native NoiseSuppressor, AcousticEchoCanceler, optimized getMinBufferSize ring buffer, and explicit 16000.0f Vosk Recognizer.',
+      'Uses Android native SpeechRecognizer with RecognizerIntent.EXTRA_PREFER_OFFLINE = true and explicit Persian ("fa-IR") language configuration plus comprehensive error handling.',
     highlights: [
-      'Hardware AudioRecord at 16000 Hz, CHANNEL_IN_MONO, ENCODING_PCM_16BIT',
-      'Attaches native NoiseSuppressor & AcousticEchoCanceler when supported by the device',
-      '4x getMinBufferSize ring buffer + urgent audio thread priority to prevent frame drops',
-      'Instantiates Recognizer(activeModel, 16000.0f) and releases native memory immediately on utterance end',
+      'Sets RecognizerIntent.EXTRA_PREFER_OFFLINE = true for 100% offline speech recognition',
+      'Explicitly configures RecognizerIntent.EXTRA_LANGUAGE = "fa-IR"',
+      'Handles ERROR_LANGUAGE_NOT_SUPPORTED / ERROR_LANGUAGE_UNAVAILABLE when offline Persian pack is missing',
     ],
     code: `package com.yaad.reminder.speech
 
-import android.annotation.SuppressLint
 import android.content.Context
-import android.media.AudioFormat
-import android.media.AudioRecord
-import android.media.MediaRecorder
-import android.media.audiofx.AcousticEchoCanceler
-import android.media.audiofx.NoiseSuppressor
+import android.content.Intent
+import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
-import android.os.Process
-import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.Job
-import kotlinx.coroutines.SupervisorJob
-import kotlinx.coroutines.cancel
-import kotlinx.coroutines.isActive
-import kotlinx.coroutines.launch
-import org.json.JSONObject
-import org.vosk.Model
-import org.vosk.Recognizer
-import org.vosk.android.StorageService
-import java.io.IOException
-import java.util.concurrent.atomic.AtomicBoolean
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
 
-class VoskVoiceManager(
+class PersianSpeechRecognizer(
     private val context: Context,
-    private val onModelReady: (Boolean) -> Unit,
     private val onListeningChanged: (Boolean) -> Unit,
     private val onPartialResultText: (String) -> Unit,
     private val onFinalResultText: (String) -> Unit,
     private val onErrorMessage: (String) -> Unit
-) {
+) : RecognitionListener {
 
-    @Volatile
-    private var model: Model? = null
-
-    private var audioRecord: AudioRecord? = null
-    private var noiseSuppressor: NoiseSuppressor? = null
-    private var echoCanceler: AcousticEchoCanceler? = null
-
-    private val isRecording = AtomicBoolean(false)
-    private var recognitionJob: Job? = null
+    private var speechRecognizer: SpeechRecognizer? = null
+    private var isListening = false
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val audioScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
 
     companion object {
-        private const val SAMPLE_RATE_HZ = 16000
-        private const val VOSK_SAMPLE_RATE = 16000.0f
-        private const val CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO
-        private const val AUDIO_ENCODING = AudioFormat.ENCODING_PCM_16BIT
-        private const val BUFFER_SIZE_MULTIPLIER = 4
-        private const val ASSET_MODEL_DIR = "model"
-    }
-
-    fun initModel() {
-        StorageService.unpack(
-            context,
-            ASSET_MODEL_DIR,
-            "model-fa-unpacked",
-            { unpackedModel: Model ->
-                this.model = unpackedModel
-                postToMain { onModelReady(true) }
-            },
-            { exception: IOException ->
-                postToMain {
-                    onModelReady(false)
-                    onErrorMessage("خطا در بارگذاری مدل صوتی آفلاین: \${exception.localizedMessage}")
-                }
-            }
-        )
+        private const val PERSIAN_LOCALE = "fa-IR"
     }
 
     fun toggleListening() {
-        if (isRecording.get()) stopListening() else startListening()
+        runOnMain {
+            if (isListening) stopListening() else startListening()
+        }
     }
 
-    @SuppressLint("MissingPermission")
     fun startListening() {
-        val activeModel = model ?: run {
-            postToMain { onErrorMessage("مدل صوتی فارسی هنوز آماده نشده است.") }
-            return
-        }
-
-        if (!isRecording.compareAndSet(false, true)) return
-
-        val minBufferSizeBytes = AudioRecord.getMinBufferSize(
-            SAMPLE_RATE_HZ,
-            CHANNEL_CONFIG,
-            AUDIO_ENCODING
-        )
-
-        if (minBufferSizeBytes == AudioRecord.ERROR || minBufferSizeBytes == AudioRecord.ERROR_BAD_VALUE) {
-            isRecording.set(false)
-            postToMain { onErrorMessage("سخت‌افزار میکروفون از فرکانس ۱۶ کیلوهرتز پشتیبانی نمی‌کند.") }
-            return
-        }
-
-        val hardwareRingBufferBytes = maxOf(
-            minBufferSizeBytes * BUFFER_SIZE_MULTIPLIER,
-            SAMPLE_RATE_HZ * 2
-        )
-        val readChunkShorts = maxOf(minBufferSizeBytes / 2, 2048)
-
-        recognitionJob = audioScope.launch {
-            Process.setThreadPriority(Process.THREAD_PRIORITY_URGENT_AUDIO)
-
-            var localRecognizer: Recognizer? = null
-            var localRecord: AudioRecord? = null
+        runOnMain {
+            if (!SpeechRecognizer.isRecognitionAvailable(context)) {
+                onListeningChanged(false)
+                onErrorMessage(
+                    "سرویس تشخیص گفتار روی این دستگاه فعال نیست. لطفاً برنامه Google را فعال یا به‌روزرسانی کنید."
+                )
+                return@runOnMain
+            }
 
             try {
-                localRecognizer = Recognizer(activeModel, VOSK_SAMPLE_RATE)
-
-                localRecord = AudioRecord(
-                    MediaRecorder.AudioSource.VOICE_RECOGNITION,
-                    SAMPLE_RATE_HZ,
-                    CHANNEL_CONFIG,
-                    AUDIO_ENCODING,
-                    hardwareRingBufferBytes
-                )
-
-                if (localRecord.state != AudioRecord.STATE_INITIALIZED) {
-                    throw IOException("راه‌اندازی میکروفون با خطا مواجه شد.")
-                }
-
-                audioRecord = localRecord
-                attachNativeAudioEffects(localRecord.audioSessionId)
-
-                localRecord.startRecording()
-                postToMain { onListeningChanged(true) }
-
-                val pcmBuffer = ShortArray(readChunkShorts)
-                var completedByUtteranceEnd = false
-
-                while (isActive && isRecording.get()) {
-                    val shortsRead = localRecord.read(pcmBuffer, 0, pcmBuffer.size)
-                    if (shortsRead > 0) {
-                        val isFinalUtterance = localRecognizer.acceptWaveForm(pcmBuffer, shortsRead)
-                        if (isFinalUtterance) {
-                            val resultText = parseVoskJson(localRecognizer.result, key = "text")
-                            if (resultText.isNotEmpty()) {
-                                completedByUtteranceEnd = true
-                                isRecording.set(false)
-                                postToMain {
-                                    onListeningChanged(false)
-                                    onFinalResultText(resultText)
-                                }
-                                break
-                            }
-                        } else {
-                            val partialText = parseVoskJson(localRecognizer.partialResult, key = "partial")
-                            if (partialText.isNotEmpty()) {
-                                postToMain { onPartialResultText(partialText) }
-                            }
-                        }
-                    } else if (shortsRead < 0) {
-                        throw IOException("خطا در خواندن بافر میکروفون (کد: \$shortsRead)")
+                if (speechRecognizer == null) {
+                    speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context).apply {
+                        setRecognitionListener(this@PersianSpeechRecognizer)
                     }
                 }
 
-                if (!completedByUtteranceEnd) {
-                    val flushedText = parseVoskJson(localRecognizer.finalResult, key = "text")
-                    postToMain {
-                        onListeningChanged(false)
-                        if (flushedText.isNotEmpty()) {
-                            onFinalResultText(flushedText)
-                        }
-                    }
-                }
+                val recognizerIntent = createOfflinePersianRecognizerIntent()
+                isListening = true
+                onListeningChanged(true)
+                speechRecognizer?.startListening(recognizerIntent)
             } catch (e: Exception) {
-                postToMain {
-                    onListeningChanged(false)
-                    onErrorMessage(e.localizedMessage ?: "خطا در پردازش صوتی آفلاین")
-                }
-            } finally {
-                isRecording.set(false)
-                releaseAudioHardware(localRecord)
-                runCatching { localRecognizer?.close() }
+                isListening = false
+                onListeningChanged(false)
+                onErrorMessage("خطا در راه‌اندازی تشخیص گفتار: \${e.localizedMessage ?: "نامشخص"}")
             }
         }
     }
 
-    private fun attachNativeAudioEffects(audioSessionId: Int) {
-        if (audioSessionId <= 0) return
+    private fun createOfflinePersianRecognizerIntent(): Intent {
+        return Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(
+                RecognizerIntent.EXTRA_LANGUAGE_MODEL,
+                RecognizerIntent.LANGUAGE_MODEL_FREE_FORM
+            )
+            // Requirement 2: Explicitly set input language to Persian (fa-IR)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, PERSIAN_LOCALE)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_PREFERENCE, PERSIAN_LOCALE)
+            putExtra(RecognizerIntent.EXTRA_ONLY_RETURN_LANGUAGE_PREFERENCE, PERSIAN_LOCALE)
 
-        runCatching {
-            if (NoiseSuppressor.isAvailable()) {
-                noiseSuppressor = NoiseSuppressor.create(audioSessionId)?.apply {
-                    enabled = true
-                }
-            }
-        }
+            // Requirement 1: Enforce offline speech recognition
+            putExtra(RecognizerIntent.EXTRA_PREFER_OFFLINE, true)
 
-        runCatching {
-            if (AcousticEchoCanceler.isAvailable()) {
-                echoCanceler = AcousticEchoCanceler.create(audioSessionId)?.apply {
-                    enabled = true
-                }
-            }
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 3)
+            putExtra(RecognizerIntent.EXTRA_CALLING_PACKAGE, context.packageName)
         }
     }
 
     fun stopListening() {
-        isRecording.set(false)
-    }
-
-    private fun releaseAudioHardware(record: AudioRecord?) {
-        runCatching {
-            noiseSuppressor?.enabled = false
-            noiseSuppressor?.release()
-        }
-        noiseSuppressor = null
-
-        runCatching {
-            echoCanceler?.enabled = false
-            echoCanceler?.release()
-        }
-        echoCanceler = null
-
-        runCatching {
-            if (record?.recordingState == AudioRecord.RECORDSTATE_RECORDING) {
-                record.stop()
+        runOnMain {
+            if (isListening) {
+                isListening = false
+                runCatching { speechRecognizer?.stopListening() }
+                onListeningChanged(false)
             }
-            record?.release()
-        }
-        if (audioRecord === record) {
-            audioRecord = null
         }
     }
+
+    override fun onReadyForSpeech(params: Bundle?) {
+        isListening = true
+        onListeningChanged(true)
+    }
+
+    override fun onBeginningOfSpeech() {}
+    override fun onRmsChanged(rmsdB: Float) {}
+    override fun onBufferReceived(buffer: ByteArray?) {}
+
+    override fun onEndOfSpeech() {
+        isListening = false
+        onListeningChanged(false)
+    }
+
+    override fun onPartialResults(partialResults: Bundle?) {
+        val matches = partialResults?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+        val bestPartial = matches?.firstOrNull()?.trim().orEmpty()
+        if (bestPartial.isNotEmpty()) {
+            onPartialResultText(bestPartial)
+        }
+    }
+
+    override fun onResults(results: Bundle?) {
+        isListening = false
+        onListeningChanged(false)
+
+        val matches = results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+        val bestMatch = matches?.firstOrNull()?.trim().orEmpty()
+        if (bestMatch.isNotEmpty()) {
+            onFinalResultText(bestMatch)
+        } else {
+            onErrorMessage("متنی از صدای شما دریافت نشد. لطفاً دوباره تلاش کنید.")
+        }
+    }
+
+    override fun onError(error: Int) {
+        val wasListening = isListening
+        isListening = false
+        onListeningChanged(false)
+
+        if (error == SpeechRecognizer.ERROR_CLIENT && !wasListening) return
+
+        val message = when (error) {
+            SpeechRecognizer.ERROR_LANGUAGE_NOT_SUPPORTED,
+            SpeechRecognizer.ERROR_LANGUAGE_UNAVAILABLE -> {
+                "بسته زبان فارسی (fa-IR) برای تشخیص گفتار آفلاین روی گوشی نصب نیست. لطفاً از تنظیمات گوگل (Offline speech recognition) زبان فارسی را دانلود کنید."
+            }
+            SpeechRecognizer.ERROR_NETWORK,
+            SpeechRecognizer.ERROR_NETWORK_TIMEOUT -> {
+                "برای کارکرد آفلاین بدون اینترنت، لطفاً بسته زبان فارسی آفلاین را در تنظیمات تشخیص گفتار گوشی دانلود کنید."
+            }
+            SpeechRecognizer.ERROR_NO_MATCH -> "عبارتی تشخیص داده نشد. لطفاً واضح‌تر صحبت کنید."
+            SpeechRecognizer.ERROR_SPEECH_TIMEOUT -> "صدایی دریافت نشد. لطفاً پس از زدن دکمه میکروفون صحبت کنید."
+            SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS -> "مجوز دسترسی به میکروفون تایید نشده است."
+            SpeechRecognizer.ERROR_AUDIO -> "خطا در ضبط صدا از میکروفون دستگاه."
+            SpeechRecognizer.ERROR_RECOGNIZER_BUSY -> "سرویس تشخیص گفتار مشغول است. چند ثانیه دیگر امتحان کنید."
+            SpeechRecognizer.ERROR_SERVER,
+            SpeechRecognizer.ERROR_SERVER_DISCONNECTED -> {
+                "ارتباط با موتور تشخیص گفتار قطع شد. از نصب بودن بسته آفلاین فارسی اطمینان حاصل کنید."
+            }
+            else -> "خطا در تشخیص گفتار (کد: \$error). از نصب بودن زبان فارسی آفلاین مطمئن شوید."
+        }
+
+        onErrorMessage(message)
+    }
+
+    override fun onEvent(eventType: Int, params: Bundle?) {}
 
     fun release() {
-        isRecording.set(false)
-        recognitionJob?.cancel()
-        recognitionJob = null
-        releaseAudioHardware(audioRecord)
-        audioScope.cancel()
-        runCatching { model?.close() }
-        model = null
+        runOnMain {
+            isListening = false
+            runCatching {
+                speechRecognizer?.cancel()
+                speechRecognizer?.destroy()
+            }
+            speechRecognizer = null
+        }
     }
 
-    private fun postToMain(block: () -> Unit) {
+    private fun runOnMain(block: () -> Unit) {
         if (Looper.myLooper() == Looper.getMainLooper()) block() else mainHandler.post(block)
-    }
-
-    private fun parseVoskJson(rawJson: String?, key: String): String {
-        if (rawJson.isNullOrBlank()) return ""
-        return runCatching {
-            JSONObject(rawJson).optString(key, "").trim()
-        }.getOrDefault("")
     }
 }`,
   },
@@ -1163,9 +1085,9 @@ class VoskVoiceManager(
     fileName: 'MainActivity.kt',
     packagePath: 'app/src/main/java/com/yaad/reminder/MainActivity.kt',
     summary:
-      'Connects Room, ItemRepository, AlarmScheduler, TimelineViewModel, VoskVoiceManager, and RECORD_AUDIO / POST_NOTIFICATIONS runtime permissions.',
+      'Connects Room, ItemRepository, AlarmScheduler, TimelineViewModel, PersianSpeechRecognizer, and RECORD_AUDIO / POST_NOTIFICATIONS runtime permissions.',
     highlights: [
-      'Injects AlarmScheduler(applicationContext) into TimelineViewModel.Factory',
+      'Initializes PersianSpeechRecognizer (native offline SpeechRecognizer)',
       'Requests POST_NOTIFICATIONS on Android 13+ and RECORD_AUDIO on microphone tap',
     ],
     code: `package com.yaad.reminder
@@ -1180,10 +1102,9 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.core.content.ContextCompat
-import com.yaad.reminder.alarm.AlarmScheduler
 import com.yaad.reminder.data.local.YaadDatabase
 import com.yaad.reminder.data.repository.ItemRepository
-import com.yaad.reminder.speech.VoskVoiceManager
+import com.yaad.reminder.speech.PersianSpeechRecognizer
 import com.yaad.reminder.ui.timeline.TimelineScreen
 import com.yaad.reminder.ui.timeline.TimelineViewModel
 
@@ -1192,16 +1113,17 @@ class MainActivity : ComponentActivity() {
     private val viewModel: TimelineViewModel by viewModels {
         val dao = YaadDatabase.getInstance(applicationContext).itemDao()
         val alarmScheduler = AlarmScheduler(applicationContext)
-        TimelineViewModel.Factory(ItemRepository(dao), alarmScheduler)
+        val repository = ItemRepository(dao, alarmScheduler)
+        TimelineViewModel.Factory(repository, alarmScheduler)
     }
 
-    private lateinit var voskVoiceManager: VoskVoiceManager
+    private lateinit var speechRecognizer: PersianSpeechRecognizer
 
     private val micPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (granted) {
-            voskVoiceManager.toggleListening()
+            speechRecognizer.toggleListening()
         } else {
             Toast.makeText(
                 this,
@@ -1213,25 +1135,20 @@ class MainActivity : ComponentActivity() {
 
     private val notificationPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
-    ) { /* High-priority alarm notifications enabled if granted */ }
+    ) { }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
         requestNotificationPermissionIfNeeded()
 
-        voskVoiceManager = VoskVoiceManager(
+        speechRecognizer = PersianSpeechRecognizer(
             context = applicationContext,
-            onModelReady = viewModel::onVoskModelReady,
             onListeningChanged = viewModel::onListeningStateChanged,
             onPartialResultText = viewModel::onPartialSpeechResult,
             onFinalResultText = viewModel::onFinalSpeechResult,
-            onErrorMessage = { msg ->
-                runOnUiThread {
-                    Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
-                }
-            }
-        ).also { it.initModel() }
+            onErrorMessage = viewModel::onSpeechError
+        )
 
         setContent {
             TimelineScreen(
@@ -1260,7 +1177,7 @@ class MainActivity : ComponentActivity() {
         ) == PackageManager.PERMISSION_GRANTED
 
         if (hasMicPermission) {
-            voskVoiceManager.toggleListening()
+            speechRecognizer.toggleListening()
         } else {
             micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
         }
@@ -1268,8 +1185,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        if (::voskVoiceManager.isInitialized) {
-            voskVoiceManager.release()
+        if (::speechRecognizer.isInitialized) {
+            speechRecognizer.release()
         }
     }
 }`,
@@ -1277,26 +1194,32 @@ class MainActivity : ComponentActivity() {
   {
     id: 'android-manifest',
     stage: 2,
-    layer: 'AndroidManifest.xml (Exact Alarm & Notification Permissions)',
+    layer: 'AndroidManifest.xml (SpeechRecognizer Queries & Alarm Receiver)',
     fileName: 'AndroidManifest.xml',
     packagePath: 'app/src/main/AndroidManifest.xml',
     summary:
-      'Registers SCHEDULE_EXACT_ALARM, USE_EXACT_ALARM, POST_NOTIFICATIONS, RECORD_AUDIO, and the AlarmReceiver BroadcastReceiver.',
+      'Declares RECORD_AUDIO, SCHEDULE_EXACT_ALARM, USE_EXACT_ALARM, POST_NOTIFICATIONS, Android 11+ <queries> for RecognitionService, and .AlarmReceiver.',
     highlights: [
-      'Declares SCHEDULE_EXACT_ALARM, USE_EXACT_ALARM, and POST_NOTIFICATIONS',
-      'Registers .alarm.AlarmReceiver for com.yaad.reminder.ACTION_TRIGGER_REMINDER',
+      'Includes <queries> for android.speech.RecognitionService required on Android 11+',
+      'Registers <receiver android:name=".AlarmReceiver" android:exported="false" />',
     ],
     code: `<?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
 
-    <!-- Required for offline Vosk microphone streaming -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
-
-    <!-- Required for exact reminder alarms and high-priority notifications -->
     <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.VIBRATE" />
+
+    <queries>
+        <intent>
+            <action android:name="android.speech.RecognitionService" />
+        </intent>
+        <intent>
+            <action android:name="android.speech.action.RECOGNIZE_SPEECH" />
+        </intent>
+    </queries>
 
     <application
         android:allowBackup="true"
@@ -1316,37 +1239,29 @@ class MainActivity : ComponentActivity() {
         </activity>
 
         <receiver
-            android:name=".alarm.AlarmReceiver"
-            android:enabled="true"
-            android:exported="false">
-            <intent-filter>
-                <action android:name="com.yaad.reminder.ACTION_TRIGGER_REMINDER" />
-            </intent-filter>
-        </receiver>
+            android:name=".AlarmReceiver"
+            android:exported="false" />
     </application>
 
 </manifest>`,
   },
   {
-    id: 'gradle-model-automation',
+    id: 'gradle-build-config',
     stage: 2,
-    layer: 'Gradle Build & Vosk Model Automation',
+    layer: 'Lightweight Gradle Build (No External Speech Model Bloat)',
     fileName: 'build.gradle',
     packagePath: 'app/build.gradle',
     summary:
-      'Standard Groovy Gradle configuration with Room, Coroutines, Jetpack Compose, Vosk Android, and the preBuild downloadVoskPersianModel task.',
+      'Optimized Groovy Gradle build configuration using Room, Coroutines, Jetpack Compose, and native Android SpeechRecognizer with zero external speech model bloat.',
     highlights: [
-      'Automatic downloadVoskPersianModel task hooked into preBuild',
-      'Excludes desktop JNA jar from vosk-android to prevent duplicate class errors with jna:5.13.0@aar',
+      'Vosk and JNA completely removed for a tiny, fast-building APK',
+      'Uses native Android SpeechRecognizer API built into the OS',
     ],
     code: `plugins {
     id 'com.android.application'
     id 'org.jetbrains.kotlin.android'
     id 'com.google.devtools.ksp'
 }
-
-import java.net.URL
-import java.util.UUID
 
 android {
     namespace 'com.yaad.reminder'
@@ -1378,48 +1293,29 @@ android {
     }
 }
 
-tasks.register('downloadVoskPersianModel') {
-    def modelUrl = 'https://alphacephei.com/vosk/models/vosk-model-small-fa-0.4.zip'
-    def assetsModelDir = file("\${projectDir}/src/main/assets/model")
-    def tempZipFile = file("\${buildDir}/tmp/vosk-model-small-fa-0.4.zip")
-    def tempExtractDir = file("\${buildDir}/tmp/vosk-extracted")
+dependencies {
+    implementation 'androidx.core:core-ktx:1.13.1'
+    implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.8.4'
+    implementation 'androidx.lifecycle:lifecycle-viewmodel-ktx:2.8.4'
+    implementation 'androidx.lifecycle:lifecycle-viewmodel-compose:2.8.4'
+    implementation 'androidx.lifecycle:lifecycle-runtime-compose:2.8.4'
+    implementation 'androidx.activity:activity-compose:1.9.1'
 
-    outputs.dir(assetsModelDir)
+    implementation platform('androidx.compose:compose-bom:2024.06.00')
+    implementation 'androidx.compose.ui:ui'
+    implementation 'androidx.compose.material3:material3'
+    implementation 'androidx.compose.material:material-icons-extended'
 
-    doLast {
-        if (new File(assetsModelDir, 'conf').exists() && new File(assetsModelDir, 'uuid').exists()) {
-            return
-        }
-        tempZipFile.parentFile.mkdirs()
-        new URL(modelUrl).withInputStream { input ->
-            tempZipFile.withOutputStream { output -> output << input }
-        }
-        tempExtractDir.deleteDir()
-        copy {
-            from zipTree(tempZipFile)
-            into tempExtractDir
-        }
-        assetsModelDir.deleteDir()
-        assetsModelDir.mkdirs()
-        copy {
-            from new File(tempExtractDir, 'vosk-model-small-fa-0.4')
-            into assetsModelDir
-        }
-        new File(assetsModelDir, 'uuid').text = UUID.randomUUID().toString()
-    }
-}
+    def roomVersion = '2.6.1'
+    implementation "androidx.room:room-runtime:\${roomVersion}"
+    implementation "androidx.room:room-ktx:\${roomVersion}"
+    ksp "androidx.room:room-compiler:\${roomVersion}"
 
-tasks.named('preBuild').configure {
-    dependsOn tasks.named('downloadVoskPersianModel')
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1'
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1'
 }`,
   },
 ];
 
-export const TERMINAL_MODEL_SCRIPT = `# Run from your Android project root in Android Studio Terminal:
-mkdir -p app/src/main/assets/model && \\
-curl -L "https://alphacephei.com/vosk/models/vosk-model-small-fa-0.4.zip" -o /tmp/vosk-fa.zip && \\
-unzip -q -o /tmp/vosk-fa.zip -d /tmp/vosk-fa-extracted && \\
-cp -R /tmp/vosk-fa-extracted/vosk-model-small-fa-0.4/* app/src/main/assets/model/ && \\
-uuidgen > app/src/main/assets/model/uuid && \\
-rm -rf /tmp/vosk-fa.zip /tmp/vosk-fa-extracted && \\
-echo "Vosk Persian model installed in app/src/main/assets/model"`;
+export const TERMINAL_MODEL_SCRIPT = `# Build the lightweight APK (using native Android SpeechRecognizer):
+./gradlew assembleDebug`;

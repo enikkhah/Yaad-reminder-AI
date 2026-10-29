@@ -24,8 +24,7 @@ data class InputUiState(
     val isExpanded: Boolean = false,
     val draftText: String = "",
     val isListening: Boolean = false,
-    val partialSpeechText: String = "",
-    val modelReady: Boolean = false
+    val partialSpeechText: String = ""
 )
 
 class TimelineViewModel(
@@ -94,10 +93,6 @@ class TimelineViewModel(
         }
     }
 
-    fun onVoskModelReady(ready: Boolean) {
-        _inputState.update { it.copy(modelReady = ready) }
-    }
-
     fun onListeningStateChanged(listening: Boolean) {
         _inputState.update {
             it.copy(
@@ -117,12 +112,18 @@ class TimelineViewModel(
     }
 
     /**
-     * Called by VoskVoiceManager when a final Persian utterance is recognized.
+     * Called by [com.yaad.reminder.speech.PersianSpeechRecognizer] when a final Persian utterance is recognized.
      */
     fun onFinalSpeechResult(finalPersianText: String) {
         val clean = finalPersianText.trim()
         if (clean.isEmpty()) return
         onSubmitText(clean)
+    }
+
+    fun onSpeechError(errorMessage: String) {
+        viewModelScope.launch {
+            _snackbarMessages.send(errorMessage)
+        }
     }
 
     fun deleteItem(itemId: Long) {

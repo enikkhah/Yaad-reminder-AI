@@ -12,7 +12,7 @@ import androidx.activity.viewModels
 import androidx.core.content.ContextCompat
 import com.yaad.reminder.data.local.YaadDatabase
 import com.yaad.reminder.data.repository.ItemRepository
-import com.yaad.reminder.speech.VoskVoiceManager
+import com.yaad.reminder.speech.PersianSpeechRecognizer
 import com.yaad.reminder.ui.timeline.TimelineScreen
 import com.yaad.reminder.ui.timeline.TimelineViewModel
 
@@ -25,13 +25,13 @@ class MainActivity : ComponentActivity() {
         TimelineViewModel.Factory(repository, alarmScheduler)
     }
 
-    private lateinit var voskVoiceManager: VoskVoiceManager
+    private lateinit var speechRecognizer: PersianSpeechRecognizer
 
     private val micPermissionLauncher = registerForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
         if (granted) {
-            voskVoiceManager.toggleListening()
+            speechRecognizer.toggleListening()
         } else {
             Toast.makeText(
                 this,
@@ -50,18 +50,13 @@ class MainActivity : ComponentActivity() {
 
         requestNotificationPermissionIfNeeded()
 
-        voskVoiceManager = VoskVoiceManager(
+        speechRecognizer = PersianSpeechRecognizer(
             context = applicationContext,
-            onModelReady = viewModel::onVoskModelReady,
             onListeningChanged = viewModel::onListeningStateChanged,
             onPartialResultText = viewModel::onPartialSpeechResult,
             onFinalResultText = viewModel::onFinalSpeechResult,
-            onErrorMessage = { msg ->
-                runOnUiThread {
-                    Toast.makeText(this, msg, Toast.LENGTH_SHORT).show()
-                }
-            }
-        ).also { it.initModel() }
+            onErrorMessage = viewModel::onSpeechError
+        )
 
         setContent {
             TimelineScreen(
@@ -90,7 +85,7 @@ class MainActivity : ComponentActivity() {
         ) == PackageManager.PERMISSION_GRANTED
 
         if (hasMicPermission) {
-            voskVoiceManager.toggleListening()
+            speechRecognizer.toggleListening()
         } else {
             micPermissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
         }
@@ -98,8 +93,8 @@ class MainActivity : ComponentActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        if (::voskVoiceManager.isInitialized) {
-            voskVoiceManager.release()
+        if (::speechRecognizer.isInitialized) {
+            speechRecognizer.release()
         }
     }
 }

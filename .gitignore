@@ -10,4 +10,3 @@ coverage/
 .env*
 !.env.example
 !gradle/wrapper/gradle-wrapper.jar
-app/src/main/assets/model/

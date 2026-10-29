@@ -1,4 +1,2 @@
-# Add project specific ProGuard rules here.
--keep class com.sun.jna.** { *; }
--keep class org.vosk.** { *; }
--dontwarn java.awt.**
+# Project-specific ProGuard rules for Yaad Reminder AI
+-keep class com.yaad.reminder.data.local.** { *; }
