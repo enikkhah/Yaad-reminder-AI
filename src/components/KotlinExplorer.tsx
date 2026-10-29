@@ -105,7 +105,7 @@ export const KotlinExplorer: React.FC<KotlinExplorerProps> = ({
               ) : (
                 <Lock className="w-3 h-3 text-stone-400" />
               )}
-              <span>Stage 2: UI, Vosk &amp; Gradle (7 files)</span>
+              <span>Stage 2: Alarm, UI &amp; Vosk (9 files)</span>
             </button>
           </div>
         </div>

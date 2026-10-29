@@ -44,10 +44,26 @@ fun TimelineScreen(
 ) {
     val items by viewModel.timelineItems.collectAsState()
     val inputState by viewModel.inputState.collectAsState()
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    LaunchedEffect(viewModel) {
+        viewModel.snackbarMessages.collect { message ->
+            snackbarHostState.showSnackbar(
+                message = message,
+                duration = SnackbarDuration.Short
+            )
+        }
+    }
 
     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
         Scaffold(
             containerColor = Color(0xFFFFFFFF),
+            snackbarHost = {
+                SnackbarHost(
+                    hostState = snackbarHostState,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                )
+            },
             bottomBar = {
                 ExpandableMinimalFabBar(
                     inputState = inputState,

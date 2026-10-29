@@ -194,9 +194,6 @@ import com.yaad.reminder.data.local.ItemCategory
 import com.yaad.reminder.data.local.ItemEntity
 import java.util.Calendar
 
-/**
- * Structured output returned by [TextProcessor.process].
- */
 data class ProcessedText(
     val originalText: String,
     val category: ItemCategory,
@@ -214,27 +211,16 @@ data class ProcessedText(
     }
 }
 
-/**
- * Offline, deterministic Rule-Based Persian NLP processor.
- *
- * Categorization rules:
- * - REMINDER: یادم باشه, بیدار, ساعت, یادآوری
- * - OCCASION: تولد, سالگرد, تبریک, مناسبت
- * - IDEA: ایده, فکر, طرح, پیشنهاد
- * - Fallback: UNCATEGORIZED
- */
 object TextProcessor {
 
     private val REMINDER_KEYWORDS = listOf("یادم باشه", "بیدار", "ساعت", "یادآوری")
     private val OCCASION_KEYWORDS = listOf("تولد", "سالگرد", "تبریک", "مناسبت")
     private val IDEA_KEYWORDS = listOf("ایده", "فکر", "طرح", "پیشنهاد")
 
-    // Matches Persian clock patterns such as "ساعت ۸", "ساعت ۱۴:۳۰", "ساعت ۸ و نیم", "ساعت ۹ شب"
     private val CLOCK_TIME_REGEX = Regex(
         pattern = """ساعت\\s*(\\d{1,2})(?:\\s*(?::|و)\\s*(\\d{1,2}|نیم))?(?:\\s*(صبح|ظهر|عصر|بعد\\s*از\\s*ظهر|شب|بامداد))?"""
     )
 
-    // Matches standalone hour + period when "ساعت" is omitted, e.g. "۸ صبح" or "۱۰ شب"
     private val STANDALONE_HOUR_REGEX = Regex(
         pattern = """(?:^|\\s)(\\d{1,2})(?:\\s*:\\s*(\\d{1,2}))?\\s+(صبح|ظهر|عصر|بعد\\s*از\\s*ظهر|شب|بامداد)(?=\\s|$)"""
     )
@@ -244,9 +230,6 @@ object TextProcessor {
     private val EMSHAB_REGEX = Regex("""(?:^|\\s)امشب(?=\\s|$)""")
     private val EMROOZ_REGEX = Regex("""(?:^|\\s)امروز(?=\\s|$)""")
 
-    /**
-     * Classifies raw Persian text and extracts relative time/date into epoch milliseconds.
-     */
     fun process(
         rawInput: String,
         referenceTimeMillis: Long = System.currentTimeMillis()
@@ -254,7 +237,6 @@ object TextProcessor {
         val cleanedOriginal = rawInput.trim()
         val normalized = normalizePersianText(cleanedOriginal)
 
-        // 1. Categorize using static keyword lists
         val reminderHits = REMINDER_KEYWORDS.filter { normalized.contains(it) }
         val occasionHits = OCCASION_KEYWORDS.filter { normalized.contains(it) }
         val ideaHits = IDEA_KEYWORDS.filter { normalized.contains(it) }
@@ -266,7 +248,6 @@ object TextProcessor {
             else -> ItemCategory.UNCATEGORIZED to emptyList()
         }
 
-        // 2. Extract Persian relative date & clock time via Regex
         val timeExtraction = extractTimestamp(normalized, referenceTimeMillis)
 
         return ProcessedText(
@@ -350,12 +331,10 @@ object TextProcessor {
                 set(Calendar.SECOND, 0)
                 set(Calendar.MILLISECOND, 0)
 
-                // If only "ساعت X" was spoken and that time has already passed today, schedule for tomorrow
                 if (dayOffset == null && timeInMillis <= referenceTimeMillis) {
                     add(Calendar.DAY_OF_YEAR, 1)
                 }
             } else {
-                // Default morning (09:00) or evening (20:00 for "امشب") when no explicit hour is given
                 set(Calendar.HOUR_OF_DAY, if (implicitEvening) 20 else 9)
                 set(Calendar.MINUTE, 0)
                 set(Calendar.SECOND, 0)
@@ -366,10 +345,6 @@ object TextProcessor {
         return calendar.timeInMillis to matchedTokens
     }
 
-    /**
-     * Normalizes Persian (۰-۹) and Eastern Arabic (٠-٩) digits to ASCII (0-9),
-     * unifies Arabic Yeh/Kaf to Persian, and replaces ZWNJ with standard whitespace.
-     */
     fun normalizePersianText(input: String): String {
         val sb = StringBuilder(input.length)
         for (ch in input) {
@@ -388,8 +363,206 @@ object TextProcessor {
   },
 
   // ============================================================================
-  // STAGE 2: REPOSITORY, VIEWMODEL, JETPACK COMPOSE UI, VOSK & GRADLE AUTOMATION
+  // STAGE 2: ALARM SCHEDULER, RECEIVER, MVVM, COMPOSE UI, VOSK & GRADLE
   // ============================================================================
+  {
+    id: 'alarm-scheduler',
+    stage: 2,
+    layer: 'Exact Alarm Scheduler (AlarmManager)',
+    fileName: 'AlarmScheduler.kt',
+    packagePath: 'app/src/main/java/com/yaad/reminder/alarm/AlarmScheduler.kt',
+    summary:
+      'Schedules exact wake-up alarms via AlarmManager.setExactAndAllowWhileIdle based on ItemEntity.extractedTime.',
+    highlights: [
+      'Uses AlarmManager.setExactAndAllowWhileIdle(RTC_WAKEUP, triggerAtMillis, pendingIntent)',
+      'Handles Android 12+ (S) canScheduleExactAlarms() check gracefully',
+      'Supports cancelling scheduled alarms when an item is deleted',
+    ],
+    code: `package com.yaad.reminder.alarm
+
+import android.app.AlarmManager
+import android.app.PendingIntent
+import android.content.Context
+import android.content.Intent
+import android.os.Build
+import com.yaad.reminder.data.local.ItemCategory
+import com.yaad.reminder.data.local.ItemEntity
+
+/**
+ * Schedules exact wake-up alarms using [AlarmManager.setExactAndAllowWhileIdle]
+ * for saved [ItemEntity] records with category [ItemCategory.REMINDER] and a valid [ItemEntity.extractedTime].
+ */
+class AlarmScheduler(private val context: Context) {
+
+    private val alarmManager: AlarmManager =
+        context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+
+    /**
+     * Schedules an exact alarm for [item] if it is a [ItemCategory.REMINDER] and has a future timestamp.
+     * @return true if the alarm was scheduled, false otherwise.
+     */
+    fun scheduleExactReminder(item: ItemEntity): Boolean {
+        val triggerAtMillis = item.extractedTime ?: return false
+        if (item.category != ItemCategory.REMINDER) return false
+        if (triggerAtMillis <= System.currentTimeMillis()) return false
+
+        val intent = Intent(context, AlarmReceiver::class.java).apply {
+            action = AlarmReceiver.ACTION_TRIGGER_REMINDER
+            putExtra(AlarmReceiver.EXTRA_ITEM_ID, item.id)
+            putExtra(AlarmReceiver.EXTRA_ITEM_TEXT, item.originalText)
+        }
+
+        val pendingIntent = PendingIntent.getBroadcast(
+            context,
+            item.id.toInt(),
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S && !alarmManager.canScheduleExactAlarms()) {
+                alarmManager.setAndAllowWhileIdle(
+                    AlarmManager.RTC_WAKEUP,
+                    triggerAtMillis,
+                    pendingIntent
+                )
+            } else {
+                alarmManager.setExactAndAllowWhileIdle(
+                    AlarmManager.RTC_WAKEUP,
+                    triggerAtMillis,
+                    pendingIntent
+                )
+            }
+            true
+        } catch (e: SecurityException) {
+            false
+        }
+    }
+
+    /**
+     * Cancels a previously scheduled alarm by its [itemId].
+     */
+    fun cancelReminder(itemId: Long) {
+        val intent = Intent(context, AlarmReceiver::class.java).apply {
+            action = AlarmReceiver.ACTION_TRIGGER_REMINDER
+        }
+        val pendingIntent = PendingIntent.getBroadcast(
+            context,
+            itemId.toInt(),
+            intent,
+            PendingIntent.FLAG_NO_CREATE or PendingIntent.FLAG_IMMUTABLE
+        )
+        if (pendingIntent != null) {
+            alarmManager.cancel(pendingIntent)
+            pendingIntent.cancel()
+        }
+    }
+}`,
+  },
+  {
+    id: 'alarm-receiver',
+    stage: 2,
+    layer: 'High-Priority Notification BroadcastReceiver',
+    fileName: 'AlarmReceiver.kt',
+    packagePath: 'app/src/main/java/com/yaad/reminder/alarm/AlarmReceiver.kt',
+    summary:
+      'BroadcastReceiver that intercepts scheduled exact alarms and dispatches a High-Priority Persian notification.',
+    highlights: [
+      'Creates NotificationChannel with NotificationManager.IMPORTANCE_HIGH',
+      'Uses NotificationCompat.PRIORITY_HIGH and NotificationCompat.CATEGORY_ALARM',
+      'Verifies POST_NOTIFICATIONS permission on Android 13+ (TIRAMISU)',
+    ],
+    code: `package com.yaad.reminder.alarm
+
+import android.Manifest
+import android.app.NotificationChannel
+import android.app.NotificationManager
+import android.app.PendingIntent
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.pm.PackageManager
+import android.os.Build
+import androidx.core.app.NotificationCompat
+import androidx.core.app.NotificationManagerCompat
+import androidx.core.content.ContextCompat
+import com.yaad.reminder.MainActivity
+import com.yaad.reminder.R
+
+/**
+ * BroadcastReceiver triggered at the exact scheduled time to post a high-priority Persian notification.
+ */
+class AlarmReceiver : BroadcastReceiver() {
+
+    companion object {
+        const val ACTION_TRIGGER_REMINDER = "com.yaad.reminder.ACTION_TRIGGER_REMINDER"
+        const val EXTRA_ITEM_ID = "extra_item_id"
+        const val EXTRA_ITEM_TEXT = "extra_item_text"
+
+        const val CHANNEL_ID = "yaad_high_priority_reminder_channel"
+        private const val CHANNEL_NAME = "یادآوری‌های یاد"
+        private const val CHANNEL_DESCRIPTION = "اعلان‌های با اولویت بالا برای یادآوری‌های زمان‌بندی‌شده"
+    }
+
+    override fun onReceive(context: Context, intent: Intent) {
+        val itemId = intent.getLongExtra(EXTRA_ITEM_ID, System.currentTimeMillis())
+        val reminderText = intent.getStringExtra(EXTRA_ITEM_TEXT)?.takeIf { it.isNotBlank() }
+            ?: "زمان یادآوری شما فرا رسیده است"
+
+        ensureHighPriorityChannel(context)
+
+        val launchIntent = Intent(context, MainActivity::class.java).apply {
+            flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP
+        }
+        val contentPendingIntent = PendingIntent.getActivity(
+            context,
+            itemId.toInt(),
+            launchIntent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+
+        val notification = NotificationCompat.Builder(context, CHANNEL_ID)
+            .setSmallIcon(R.drawable.ic_launcher)
+            .setContentTitle("یادآوری · یاد")
+            .setContentText(reminderText)
+            .setStyle(NotificationCompat.BigTextStyle().bigText(reminderText))
+            .setPriority(NotificationCompat.PRIORITY_HIGH)
+            .setCategory(NotificationCompat.CATEGORY_ALARM)
+            .setDefaults(NotificationCompat.DEFAULT_ALL)
+            .setAutoCancel(true)
+            .setContentIntent(contentPendingIntent)
+            .build()
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val hasPermission = ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!hasPermission) return
+        }
+
+        NotificationManagerCompat.from(context).notify(itemId.toInt(), notification)
+    }
+
+    private fun ensureHighPriorityChannel(context: Context) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val manager = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            val existing = manager.getNotificationChannel(CHANNEL_ID)
+            if (existing == null) {
+                val channel = NotificationChannel(
+                    CHANNEL_ID,
+                    CHANNEL_NAME,
+                    NotificationManager.IMPORTANCE_HIGH
+                ).apply {
+                    description = CHANNEL_DESCRIPTION
+                    enableVibration(true)
+                }
+                manager.createNotificationChannel(channel)
+            }
+        }
+    }
+}`,
+  },
   {
     id: 'item-repository',
     stage: 2,
@@ -400,7 +573,7 @@ object TextProcessor {
       'Coordinates TextProcessor classification and Room DAO persistence off the main thread.',
     highlights: [
       'Exposes timelineItems: Flow<List<ItemEntity>> directly from ItemDao',
-      'Processes raw Persian text and saves ItemEntity in a single suspend call',
+      'Processes raw Persian text and returns the saved ItemEntity with its generated Room ID',
     ],
     code: `package com.yaad.reminder.data.repository
 
@@ -432,29 +605,38 @@ class ItemRepository(
   {
     id: 'timeline-viewmodel',
     stage: 2,
-    layer: 'MVVM ViewModel',
+    layer: 'MVVM ViewModel (Alarm + Snackbar Trigger)',
     fileName: 'TimelineViewModel.kt',
     packagePath: 'app/src/main/java/com/yaad/reminder/ui/timeline/TimelineViewModel.kt',
     summary:
-      'Manages UI state for the minimalist timeline, expandable FAB input state, and offline Vosk voice recognition callbacks.',
+      'Manages UI state, invokes AlarmScheduler immediately when a REMINDER item is saved, and emits Snackbar confirmation events.',
     highlights: [
-      'Converts DAO Flow<List<ItemEntity>> into StateFlow via stateIn(WhileSubscribed(5000))',
-      'Receives final recognized Persian text from Vosk and persists via ItemRepository',
+      'Calls alarmScheduler.scheduleExactReminder(savedItem) immediately after saving a REMINDER',
+      'Emits Persian Snackbar confirmation message via Channel<String>',
+      'Cancels pending alarm when deleteItem(itemId) is called',
     ],
     code: `package com.yaad.reminder.ui.timeline
 
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.yaad.reminder.alarm.AlarmScheduler
+import com.yaad.reminder.data.local.ItemCategory
 import com.yaad.reminder.data.local.ItemEntity
 import com.yaad.reminder.data.repository.ItemRepository
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.receiveAsFlow
 import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 data class InputUiState(
     val isExpanded: Boolean = false,
@@ -465,7 +647,8 @@ data class InputUiState(
 )
 
 class TimelineViewModel(
-    private val repository: ItemRepository
+    private val repository: ItemRepository,
+    private val alarmScheduler: AlarmScheduler
 ) : ViewModel() {
 
     val timelineItems: StateFlow<List<ItemEntity>> = repository.timelineItems
@@ -477,6 +660,9 @@ class TimelineViewModel(
 
     private val _inputState = MutableStateFlow(InputUiState())
     val inputState: StateFlow<InputUiState> = _inputState.asStateFlow()
+
+    private val _snackbarMessages = Channel<String>(Channel.BUFFERED)
+    val snackbarMessages: Flow<String> = _snackbarMessages.receiveAsFlow()
 
     fun onExpandInput() {
         _inputState.update { it.copy(isExpanded = true) }
@@ -506,7 +692,7 @@ class TimelineViewModel(
         if (clean.isEmpty()) return
 
         viewModelScope.launch {
-            repository.processAndSave(clean)
+            val savedItem = repository.processAndSave(clean)
             _inputState.update {
                 it.copy(
                     draftText = "",
@@ -514,6 +700,19 @@ class TimelineViewModel(
                     isExpanded = false,
                     isListening = false
                 )
+            }
+
+            // Immediately schedule an exact alarm if the saved item is a REMINDER with an extracted time
+            if (savedItem != null &&
+                savedItem.category == ItemCategory.REMINDER &&
+                savedItem.extractedTime != null
+            ) {
+                val isScheduled = alarmScheduler.scheduleExactReminder(savedItem)
+                if (isScheduled) {
+                    val formatter = SimpleDateFormat("HH:mm", Locale("fa", "IR"))
+                    val formattedTime = formatter.format(Date(savedItem.extractedTime))
+                    _snackbarMessages.send("آلارم یادآوری برای ساعت \$formattedTime تنظیم شد")
+                }
             }
         }
     }
@@ -540,9 +739,6 @@ class TimelineViewModel(
         }
     }
 
-    /**
-     * Called by VoskVoiceManager when a final Persian utterance is recognized.
-     */
     fun onFinalSpeechResult(finalPersianText: String) {
         val clean = finalPersianText.trim()
         if (clean.isEmpty()) return
@@ -551,14 +747,18 @@ class TimelineViewModel(
 
     fun deleteItem(itemId: Long) {
         viewModelScope.launch {
+            alarmScheduler.cancelReminder(itemId)
             repository.deleteItem(itemId)
         }
     }
 
-    class Factory(private val repository: ItemRepository) : ViewModelProvider.Factory {
+    class Factory(
+        private val repository: ItemRepository,
+        private val alarmScheduler: AlarmScheduler
+    ) : ViewModelProvider.Factory {
         @Suppress("UNCHECKED_CAST")
         override fun <T : ViewModel> create(modelClass: Class<T>): T {
-            return TimelineViewModel(repository) as T
+            return TimelineViewModel(repository, alarmScheduler) as T
         }
     }
 }`,
@@ -566,15 +766,14 @@ class TimelineViewModel(
   {
     id: 'timeline-compose-ui',
     stage: 2,
-    layer: 'Minimalist Jetpack Compose UI',
+    layer: 'Minimalist Jetpack Compose UI + SnackbarHost',
     fileName: 'TimelineScreen.kt',
     packagePath: 'app/src/main/java/com/yaad/reminder/ui/timeline/TimelineScreen.kt',
     summary:
-      'Ultra-minimalist RTL Jetpack Compose screen with a borderless LazyColumn timeline and smoothly expanding bottom Floating Action Button.',
+      'Ultra-minimalist RTL Jetpack Compose screen with a borderless LazyColumn, SnackbarHost confirmation for scheduled alarms, and an expandable bottom FAB.',
     highlights: [
-      'RTL LayoutDirection.Rtl support with zero cluttered borders or shadows',
+      'Collects viewModel.snackbarMessages in LaunchedEffect to display alarm confirmation Snackbar',
       'Expandable FAB transitions smoothly from Mic icon to borderless BasicTextField ("بنویسید یا صحبت کنید...")',
-      'Quiet inline metadata for category and extracted Persian timestamp',
     ],
     code: `package com.yaad.reminder.ui.timeline
 
@@ -622,10 +821,26 @@ fun TimelineScreen(
 ) {
     val items by viewModel.timelineItems.collectAsState()
     val inputState by viewModel.inputState.collectAsState()
+    val snackbarHostState = remember { SnackbarHostState() }
+
+    LaunchedEffect(viewModel) {
+        viewModel.snackbarMessages.collect { message ->
+            snackbarHostState.showSnackbar(
+                message = message,
+                duration = SnackbarDuration.Short
+            )
+        }
+    }
 
     CompositionLocalProvider(LocalLayoutDirection provides LayoutDirection.Rtl) {
         Scaffold(
             containerColor = Color(0xFFFFFFFF),
+            snackbarHost = {
+                SnackbarHost(
+                    hostState = snackbarHostState,
+                    modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+                )
+            },
             bottomBar = {
                 ExpandableMinimalFabBar(
                     inputState = inputState,
@@ -672,184 +887,6 @@ fun TimelineScreen(
             }
         }
     }
-}
-
-@Composable
-private fun TimelineItemRow(item: ItemEntity) {
-    val timeFormat = remember { SimpleDateFormat("HH:mm", Locale("fa", "IR")) }
-    val dateFormat = remember { SimpleDateFormat("yyyy/MM/dd HH:mm", Locale("fa", "IR")) }
-
-    Column(
-        modifier = Modifier
-            .fillMaxWidth()
-            .padding(vertical = 18.dp)
-    ) {
-        Text(
-            text = item.originalText,
-            color = Color(0xFF111827),
-            fontSize = 16.sp,
-            lineHeight = 26.sp,
-            fontWeight = FontWeight.Normal
-        )
-
-        Spacer(modifier = Modifier.height(6.dp))
-
-        // Unboxed inline metadata separated by middot (Zero-Pill Discipline)
-        val metadataParts = buildList {
-            add(item.category.persianLabel)
-            item.extractedTime?.let { ts ->
-                add("زمان: \${dateFormat.format(Date(ts))}")
-            }
-            add(timeFormat.format(Date(item.createdAt)))
-        }
-
-        Text(
-            text = metadataParts.joinToString(" · "),
-            color = Color(0xFF6B7280),
-            fontSize = 12.sp
-        )
-    }
-}
-
-@Composable
-private fun ExpandableMinimalFabBar(
-    inputState: InputUiState,
-    onMicClick: () -> Unit,
-    onExpandClick: () -> Unit,
-    onTextChanged: (String) -> Unit,
-    onSubmit: () -> Unit
-) {
-    Box(
-        modifier = Modifier
-            .fillMaxWidth()
-            .navigationBarsPadding()
-            .imePadding()
-            .padding(horizontal = 20.dp, vertical = 16.dp),
-        contentAlignment = Alignment.BottomCenter
-    ) {
-        Surface(
-            modifier = Modifier
-                .animateContentSize(
-                    animationSpec = tween(durationMillis = 180, easing = FastOutSlowInEasing)
-                )
-                .then(
-                    if (inputState.isExpanded) Modifier.fillMaxWidth()
-                    else Modifier.wrapContentWidth()
-                ),
-            shape = if (inputState.isExpanded) RoundedCornerShape(28.dp) else CircleShape,
-            color = Color(0xFFF3F4F6),
-            tonalElevation = 0.dp,
-            shadowElevation = 0.dp
-        ) {
-            AnimatedContent(
-                targetState = inputState.isExpanded,
-                label = "ExpandableFabTransition"
-            ) { expanded ->
-                if (!expanded) {
-                    // Default State: Minimalist Microphone Button + Subtle Tap-to-Type Trigger
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        modifier = Modifier.padding(6.dp)
-                    ) {
-                        IconButton(
-                            onClick = onMicClick,
-                            modifier = Modifier
-                                .size(48.dp)
-                                .clip(CircleShape)
-                                .background(Color(0xFF111827))
-                        ) {
-                            Icon(
-                                imageVector = Icons.Rounded.Mic,
-                                contentDescription = "ضبط صدا",
-                                tint = Color.White
-                            )
-                        }
-
-                        Text(
-                            text = "بنویسید یا صحبت کنید...",
-                            color = Color(0xFF6B7280),
-                            fontSize = 14.sp,
-                            modifier = Modifier
-                                .clickable { onExpandClick() }
-                                .padding(horizontal = 14.dp, vertical = 10.dp)
-                        )
-                    }
-                } else {
-                    // Expanded State: Smooth horizontal borderless EditText + Mic & Submit triggers
-                    Row(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .padding(horizontal = 12.dp, vertical = 8.dp),
-                        verticalAlignment = Alignment.CenterVertically
-                    ) {
-                        IconButton(
-                            onClick = onMicClick,
-                            modifier = Modifier.size(40.dp)
-                        ) {
-                            Icon(
-                                imageVector = if (inputState.isListening) Icons.Rounded.Stop else Icons.Rounded.Mic,
-                                contentDescription = "ورودی صوتی",
-                                tint = if (inputState.isListening) Color(0xFFDC2626) else Color(0xFF111827)
-                            )
-                        }
-
-                        val displayedText = if (inputState.isListening && inputState.partialSpeechText.isNotEmpty()) {
-                            inputState.partialSpeechText
-                        } else {
-                            inputState.draftText
-                        }
-
-                        Box(
-                            modifier = Modifier
-                                .weight(1f)
-                                .padding(horizontal = 8.dp),
-                            contentAlignment = Alignment.CenterStart
-                        ) {
-                            if (displayedText.isEmpty()) {
-                                Text(
-                                    text = if (inputState.isListening) "در حال شنیدن صدای شما..." else "بنویسید یا صحبت کنید...",
-                                    color = Color(0xFF9CA3AF),
-                                    fontSize = 15.sp
-                                )
-                            }
-                            BasicTextField(
-                                value = displayedText,
-                                onValueChange = onTextChanged,
-                                textStyle = TextStyle(
-                                    color = Color(0xFF111827),
-                                    fontSize = 15.sp
-                                ),
-                                cursorBrush = SolidColor(Color(0xFF1D4ED8)),
-                                singleLine = true,
-                                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
-                                keyboardActions = KeyboardActions(onDone = { onSubmit() }),
-                                modifier = Modifier.fillMaxWidth()
-                            )
-                        }
-
-                        IconButton(
-                            onClick = onSubmit,
-                            enabled = displayedText.isNotBlank(),
-                            modifier = Modifier
-                                .size(40.dp)
-                                .clip(CircleShape)
-                                .background(
-                                    if (displayedText.isNotBlank()) Color(0xFF111827)
-                                    else Color.Transparent
-                                )
-                        ) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Rounded.Send,
-                                contentDescription = "ثبت",
-                                tint = if (displayedText.isNotBlank()) Color.White else Color(0xFF9CA3AF),
-                                modifier = Modifier.size(18.dp)
-                            )
-                        }
-                    }
-                }
-            }
-        }
-    }
 }`,
   },
   {
@@ -859,11 +896,10 @@ private fun ExpandableMinimalFabBar(
     fileName: 'VoskVoiceManager.kt',
     packagePath: 'app/src/main/java/com/yaad/reminder/speech/VoskVoiceManager.kt',
     summary:
-      'Unpacks the bundled Persian Vosk model from assets/model-fa, streams 16kHz microphone audio offline, parses Vosk JSON hypotheses, and forwards the final string to TimelineViewModel.',
+      'Unpacks the bundled Persian Vosk model from assets/model, streams 16kHz microphone audio offline, and forwards the final string to TimelineViewModel.',
     highlights: [
-      'Uses StorageService.unpack to initialize assets/model-fa off the UI thread',
+      'Uses StorageService.unpack to initialize src/main/assets/model off the UI thread',
       'Extracts "text" and "partial" JSON fields from Vosk Recognizer results',
-      'Clean lifecycle release in onDestroy',
     ],
     code: `package com.yaad.reminder.speech
 
@@ -876,10 +912,6 @@ import org.vosk.android.SpeechService
 import org.vosk.android.StorageService
 import java.io.IOException
 
-/**
- * Wraps the offline Vosk Android SpeechService for 16kHz Persian speech recognition.
- * Expects the unpacked lightweight Persian model inside \`src/main/assets/model-fa\`.
- */
 class VoskVoiceManager(
     private val context: Context,
     private val onModelReady: (Boolean) -> Unit,
@@ -895,12 +927,9 @@ class VoskVoiceManager(
 
     companion object {
         private const val SAMPLE_RATE = 16000.0f
-        private const val ASSET_MODEL_DIR = "model-fa"
+        private const val ASSET_MODEL_DIR = "model"
     }
 
-    /**
-     * Unpacks the Persian model from APK assets into internal storage on first launch.
-     */
     fun initModel() {
         StorageService.unpack(
             context,
@@ -918,16 +947,12 @@ class VoskVoiceManager(
     }
 
     fun toggleListening() {
-        if (isListening) {
-            stopListening()
-        } else {
-            startListening()
-        }
+        if (isListening) stopListening() else startListening()
     }
 
     fun startListening() {
         val activeModel = model ?: run {
-            onErrorMessage("مدل صوتی فارسی هنوز آماده نشده است.")
+            onErrorMessage("مدل صوتی فارسی در حال آماده‌سازی است...")
             return
         }
 
@@ -953,9 +978,7 @@ class VoskVoiceManager(
 
     override fun onPartialResult(hypothesis: String?) {
         val partial = parseVoskJson(hypothesis, key = "partial")
-        if (partial.isNotEmpty()) {
-            onPartialResultText(partial)
-        }
+        if (partial.isNotEmpty()) onPartialResultText(partial)
     }
 
     override fun onResult(hypothesis: String?) {
@@ -968,9 +991,7 @@ class VoskVoiceManager(
 
     override fun onFinalResult(hypothesis: String?) {
         val text = parseVoskJson(hypothesis, key = "text")
-        if (text.isNotEmpty()) {
-            onFinalResultText(text)
-        }
+        if (text.isNotEmpty()) onFinalResultText(text)
         onListeningChanged(false)
         isListening = false
     }
@@ -1001,19 +1022,20 @@ class VoskVoiceManager(
   {
     id: 'main-activity',
     stage: 2,
-    layer: 'Android Entry Point & Permission Wiring',
+    layer: 'Android Entry Point & Permissions',
     fileName: 'MainActivity.kt',
     packagePath: 'app/src/main/java/com/yaad/reminder/MainActivity.kt',
     summary:
-      'Connects Room, ItemRepository, TimelineViewModel, VoskVoiceManager, and RECORD_AUDIO runtime permission handling to TimelineScreen.',
+      'Connects Room, ItemRepository, AlarmScheduler, TimelineViewModel, VoskVoiceManager, and RECORD_AUDIO / POST_NOTIFICATIONS runtime permissions.',
     highlights: [
-      'Requests Manifest.permission.RECORD_AUDIO on first microphone tap',
-      'Initializes Vosk Persian model on startup and releases native resources in onDestroy()',
+      'Injects AlarmScheduler(applicationContext) into TimelineViewModel.Factory',
+      'Requests POST_NOTIFICATIONS on Android 13+ and RECORD_AUDIO on microphone tap',
     ],
     code: `package com.yaad.reminder
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.widget.Toast
 import androidx.activity.ComponentActivity
@@ -1021,6 +1043,7 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.core.content.ContextCompat
+import com.yaad.reminder.alarm.AlarmScheduler
 import com.yaad.reminder.data.local.YaadDatabase
 import com.yaad.reminder.data.repository.ItemRepository
 import com.yaad.reminder.speech.VoskVoiceManager
@@ -1031,7 +1054,8 @@ class MainActivity : ComponentActivity() {
 
     private val viewModel: TimelineViewModel by viewModels {
         val dao = YaadDatabase.getInstance(applicationContext).itemDao()
-        TimelineViewModel.Factory(ItemRepository(dao))
+        val alarmScheduler = AlarmScheduler(applicationContext)
+        TimelineViewModel.Factory(ItemRepository(dao), alarmScheduler)
     }
 
     private lateinit var voskVoiceManager: VoskVoiceManager
@@ -1050,8 +1074,14 @@ class MainActivity : ComponentActivity() {
         }
     }
 
+    private val notificationPermissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestPermission()
+    ) { /* High-priority alarm notifications enabled if granted */ }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+
+        requestNotificationPermissionIfNeeded()
 
         voskVoiceManager = VoskVoiceManager(
             context = applicationContext,
@@ -1071,6 +1101,18 @@ class MainActivity : ComponentActivity() {
                 viewModel = viewModel,
                 onToggleVoiceRecognition = ::handleMicButtonClicked
             )
+        }
+    }
+
+    private fun requestNotificationPermissionIfNeeded() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            val hasPerm = ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+            if (!hasPerm) {
+                notificationPermissionLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+            }
         }
     }
 
@@ -1098,14 +1140,14 @@ class MainActivity : ComponentActivity() {
   {
     id: 'android-manifest',
     stage: 2,
-    layer: 'Android Manifest & Audio Permission',
+    layer: 'AndroidManifest.xml (Exact Alarm & Notification Permissions)',
     fileName: 'AndroidManifest.xml',
     packagePath: 'app/src/main/AndroidManifest.xml',
     summary:
-      'Declares RECORD_AUDIO permission for offline Vosk speech recognition and registers MainActivity with RTL support.',
+      'Registers SCHEDULE_EXACT_ALARM, USE_EXACT_ALARM, POST_NOTIFICATIONS, RECORD_AUDIO, and the AlarmReceiver BroadcastReceiver.',
     highlights: [
-      'Strictly offline: no INTERNET permission required at runtime',
-      'Enables android:supportsRtl="true" for native Persian layout alignment',
+      'Declares SCHEDULE_EXACT_ALARM, USE_EXACT_ALARM, and POST_NOTIFICATIONS',
+      'Registers .alarm.AlarmReceiver for com.yaad.reminder.ACTION_TRIGGER_REMINDER',
     ],
     code: `<?xml version="1.0" encoding="utf-8"?>
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
@@ -1113,11 +1155,18 @@ class MainActivity : ComponentActivity() {
     <!-- Required for offline Vosk microphone streaming -->
     <uses-permission android:name="android.permission.RECORD_AUDIO" />
 
+    <!-- Required for exact reminder alarms and high-priority notifications -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.USE_EXACT_ALARM" />
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+    <uses-permission android:name="android.permission.VIBRATE" />
+
     <application
         android:allowBackup="true"
-        android:label="یاد (Yaad)"
+        android:icon="@drawable/ic_launcher"
+        android:label="@string/app_name"
         android:supportsRtl="true"
-        android:theme="@android:style/Theme.Material.Light.NoActionBar">
+        android:theme="@style/Theme.YaadReminder">
 
         <activity
             android:name=".MainActivity"
@@ -1128,6 +1177,15 @@ class MainActivity : ComponentActivity() {
                 <category android:name="android.intent.category.LAUNCHER" />
             </intent-filter>
         </activity>
+
+        <receiver
+            android:name=".alarm.AlarmReceiver"
+            android:enabled="true"
+            android:exported="false">
+            <intent-filter>
+                <action android:name="com.yaad.reminder.ACTION_TRIGGER_REMINDER" />
+            </intent-filter>
+        </receiver>
     </application>
 
 </manifest>`,
@@ -1136,121 +1194,95 @@ class MainActivity : ComponentActivity() {
     id: 'gradle-model-automation',
     stage: 2,
     layer: 'Gradle Build & Vosk Model Automation',
-    fileName: 'build.gradle.kts',
-    packagePath: 'app/build.gradle.kts',
+    fileName: 'build.gradle',
+    packagePath: 'app/build.gradle',
     summary:
-      'Includes Room, Coroutines, Jetpack Compose, Vosk Android dependency, and a custom preBuild Gradle task that automatically downloads and extracts vosk-model-small-fa-0.4 into src/main/assets/model-fa.',
+      'Standard Groovy Gradle configuration with Room, Coroutines, Jetpack Compose, Vosk Android, and the preBuild downloadVoskPersianModel task.',
     highlights: [
       'Automatic downloadVoskPersianModel task hooked into preBuild',
-      'Generates required Vosk UUID file so StorageService.unpack succeeds cleanly',
-      'Includes fallback one-line curl + unzip terminal script',
+      'Excludes desktop JNA jar from vosk-android to prevent duplicate class errors with jna:5.13.0@aar',
     ],
     code: `plugins {
-    id("com.android.application")
-    id("org.jetbrains.kotlin.android")
-    id("com.google.devtools.ksp")
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+    id 'com.google.devtools.ksp'
 }
 
 import java.net.URL
 import java.util.UUID
 
 android {
-    namespace = "com.yaad.reminder"
-    compileSdk = 35
+    namespace 'com.yaad.reminder'
+    compileSdk 34
 
     defaultConfig {
-        applicationId = "com.yaad.reminder"
-        minSdk = 24
-        targetSdk = 35
-        versionCode = 1
-        versionName = "1.0.0"
+        applicationId "com.yaad.reminder"
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName "1.0.0"
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = '17'
     }
 
     buildFeatures {
-        compose = true
+        compose true
     }
 
     composeOptions {
-        kotlinCompilerExtensionVersion = "1.5.14"
+        kotlinCompilerExtensionVersion '1.5.14'
     }
 }
 
-/**
- * Custom Gradle task that downloads vosk-model-small-fa-0.4.zip from AlphaCephei,
- * unzips it, and moves its contents to src/main/assets/model-fa before compilation.
- */
-val downloadVoskPersianModel by tasks.registering {
-    val modelUrl = "https://alphacephei.com/vosk/models/vosk-model-small-fa-0.4.zip"
-    val assetsModelDir = file("\${projectDir}/src/main/assets/model-fa")
-    val tempZipFile = layout.buildDirectory.file("tmp/vosk-model-small-fa-0.4.zip").get().asFile
-    val tempExtractDir = layout.buildDirectory.dir("tmp/vosk-extracted").get().asFile
+tasks.register('downloadVoskPersianModel') {
+    def modelUrl = 'https://alphacephei.com/vosk/models/vosk-model-small-fa-0.4.zip'
+    def assetsModelDir = file("\${projectDir}/src/main/assets/model")
+    def tempZipFile = file("\${buildDir}/tmp/vosk-model-small-fa-0.4.zip")
+    def tempExtractDir = file("\${buildDir}/tmp/vosk-extracted")
 
     outputs.dir(assetsModelDir)
 
     doLast {
-        if (File(assetsModelDir, "conf").exists()) {
-            logger.lifecycle("Vosk Persian model already present in src/main/assets/model-fa")
-            return@doLast
+        if (new File(assetsModelDir, 'conf').exists() && new File(assetsModelDir, 'uuid').exists()) {
+            return
         }
-
-        logger.lifecycle("Downloading Vosk Persian model from \$modelUrl ...")
         tempZipFile.parentFile.mkdirs()
-        URL(modelUrl).openStream().use { input ->
-            tempZipFile.outputStream().use { output -> input.copyTo(output) }
+        new URL(modelUrl).withInputStream { input ->
+            tempZipFile.withOutputStream { output -> output << input }
         }
-
-        logger.lifecycle("Extracting Vosk Persian model...")
-        tempExtractDir.deleteRecursively()
+        tempExtractDir.deleteDir()
         copy {
-            from(zipTree(tempZipFile))
-            into(tempExtractDir)
+            from zipTree(tempZipFile)
+            into tempExtractDir
         }
-
-        assetsModelDir.deleteRecursively()
+        assetsModelDir.deleteDir()
         assetsModelDir.mkdirs()
-
-        val extractedRoot = File(tempExtractDir, "vosk-model-small-fa-0.4")
-        extractedRoot.copyRecursively(assetsModelDir, overwrite = true)
-
-        // Vosk StorageService requires a uuid file inside the asset model directory
-        File(assetsModelDir, "uuid").writeText(UUID.randomUUID().toString())
-        logger.lifecycle("Vosk Persian model ready at: \${assetsModelDir.absolutePath}")
+        copy {
+            from new File(tempExtractDir, 'vosk-model-small-fa-0.4')
+            into assetsModelDir
+        }
+        new File(assetsModelDir, 'uuid').text = UUID.randomUUID().toString()
     }
 }
 
-tasks.named("preBuild") {
-    dependsOn(downloadVoskPersianModel)
-}
-
-dependencies {
-    val roomVersion = "2.6.1"
-    implementation("androidx.room:room-runtime:\$roomVersion")
-    implementation("androidx.room:room-ktx:\$roomVersion")
-    ksp("androidx.room:room-compiler:\$roomVersion")
-
-    // Offline Speech-to-Text: Vosk Android
-    implementation("com.alphacephei:vosk-android:0.3.47")
-    implementation("net.java.dev.jna:jna:5.13.0@aar")
-
-    // Coroutines & Lifecycle ViewModel
-    implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1")
-    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.4")
-    implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.4")
-
-    // Jetpack Compose Minimal UI
-    implementation(platform("androidx.compose:compose-bom:2024.09.00"))
-    implementation("androidx.compose.ui:ui")
-    implementation("androidx.compose.material3:material3")
-    implementation("androidx.compose.material:material-icons-extended")
+tasks.named('preBuild').configure {
+    dependsOn tasks.named('downloadVoskPersianModel')
 }`,
   },
 ];
 
 export const TERMINAL_MODEL_SCRIPT = `# Run from your Android project root in Android Studio Terminal:
-mkdir -p app/src/main/assets/model-fa && \\
+mkdir -p app/src/main/assets/model && \\
 curl -L "https://alphacephei.com/vosk/models/vosk-model-small-fa-0.4.zip" -o /tmp/vosk-fa.zip && \\
 unzip -q -o /tmp/vosk-fa.zip -d /tmp/vosk-fa-extracted && \\
-cp -R /tmp/vosk-fa-extracted/vosk-model-small-fa-0.4/* app/src/main/assets/model-fa/ && \\
-uuidgen > app/src/main/assets/model-fa/uuid && \\
+cp -R /tmp/vosk-fa-extracted/vosk-model-small-fa-0.4/* app/src/main/assets/model/ && \\
+uuidgen > app/src/main/assets/model/uuid && \\
 rm -rf /tmp/vosk-fa.zip /tmp/vosk-fa-extracted && \\
-echo "Vosk Persian model installed in app/src/main/assets/model-fa"`;
+echo "Vosk Persian model installed in app/src/main/assets/model"`;

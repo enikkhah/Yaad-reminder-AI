@@ -40,10 +40,30 @@ export const AndroidSimulator: React.FC<AndroidSimulatorProps> = ({
   const [partialSpeech, setPartialSpeech] = useState('');
   const [sampleIndex, setSampleIndex] = useState(0);
   const [voiceModeLabel, setVoiceModeLabel] = useState<string>('Vosk Offline fa-IR');
+  const [snackbarMessage, setSnackbarMessage] = useState<string | null>(null);
 
   const inputRef = useRef<HTMLInputElement | null>(null);
   const voiceTimerRef = useRef<number | null>(null);
+  const snackbarTimerRef = useRef<number | null>(null);
   const recognitionRef = useRef<any>(null);
+
+  const commitItemWithAlarmCheck = (rawText: string) => {
+    const clean = rawText.trim();
+    if (!clean) return;
+    const processed = TextProcessor.process(clean);
+    onAddItem(clean);
+
+    if (processed.category === 'REMINDER' && processed.extractedTime) {
+      const formattedClock = formatPersianClockOnly(processed.extractedTime);
+      setSnackbarMessage(`آلارم یادآوری برای ساعت ${formattedClock} تنظیم شد`);
+      if (snackbarTimerRef.current) {
+        window.clearTimeout(snackbarTimerRef.current);
+      }
+      snackbarTimerRef.current = window.setTimeout(() => {
+        setSnackbarMessage(null);
+      }, 3800);
+    }
+  };
 
   useEffect(() => {
     if (isExpanded && !isListening) {
@@ -55,6 +75,9 @@ export const AndroidSimulator: React.FC<AndroidSimulatorProps> = ({
     return () => {
       if (voiceTimerRef.current) {
         window.clearInterval(voiceTimerRef.current);
+      }
+      if (snackbarTimerRef.current) {
+        window.clearTimeout(snackbarTimerRef.current);
       }
       if (recognitionRef.current) {
         try {
@@ -100,7 +123,7 @@ export const AndroidSimulator: React.FC<AndroidSimulatorProps> = ({
         setPartialSpeech(words.slice(0, step).join(' '));
       } else {
         stopVoiceCapture();
-        onAddItem(targetPhrase);
+        commitItemWithAlarmCheck(targetPhrase);
         setPartialSpeech('');
         setDraftText('');
         setIsExpanded(false);
@@ -113,7 +136,7 @@ export const AndroidSimulator: React.FC<AndroidSimulatorProps> = ({
       const currentTranscript = partialSpeech.trim();
       stopVoiceCapture();
       if (currentTranscript) {
-        onAddItem(currentTranscript);
+        commitItemWithAlarmCheck(currentTranscript);
         setPartialSpeech('');
         setDraftText('');
         setIsExpanded(false);
@@ -158,7 +181,7 @@ export const AndroidSimulator: React.FC<AndroidSimulatorProps> = ({
         recognition.onend = () => {
           setIsListening(false);
           if (latestTranscript) {
-            onAddItem(latestTranscript);
+            commitItemWithAlarmCheck(latestTranscript);
             setPartialSpeech('');
             setDraftText('');
             setIsExpanded(false);
@@ -182,7 +205,7 @@ export const AndroidSimulator: React.FC<AndroidSimulatorProps> = ({
     if (!activeText) return;
 
     stopVoiceCapture();
-    onAddItem(activeText);
+    commitItemWithAlarmCheck(activeText);
     setDraftText('');
     setPartialSpeech('');
     setIsExpanded(false);
@@ -351,6 +374,20 @@ export const AndroidSimulator: React.FC<AndroidSimulatorProps> = ({
           </div>
         )}
 
+        {/* Android Snackbar Confirmation (when REMINDER alarm is scheduled via AlarmScheduler) */}
+        {snackbarMessage && (
+          <div
+            dir="rtl"
+            className="mx-4 mb-2 px-4 py-2.5 bg-stone-900 text-white rounded-xl text-xs font-persian flex items-center justify-between gap-2 shadow-sm"
+            role="status"
+          >
+            <span>{snackbarMessage}</span>
+            <span className="text-[10px] font-mono-tabular text-stone-300 shrink-0">
+              AlarmManager
+            </span>
+          </div>
+        )}
+
         {/* Bottom Input Component: Smoothly Expandable FAB */}
         <div
           dir="rtl"
@@ -445,7 +482,7 @@ export const AndroidSimulator: React.FC<AndroidSimulatorProps> = ({
             <button
               key={sample}
               type="button"
-              onClick={() => onAddItem(sample)}
+              onClick={() => commitItemWithAlarmCheck(sample)}
               className="px-2.5 py-1.5 text-xs bg-white hover:bg-stone-100 text-stone-700 border border-stone-200 rounded-lg transition-colors text-right cursor-pointer"
             >
               {sample}
