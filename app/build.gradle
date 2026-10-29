@@ -1,0 +1,149 @@
+plugins {
+    id 'com.android.application'
+    id 'org.jetbrains.kotlin.android'
+    id 'com.google.devtools.ksp'
+}
+
+import java.net.URL
+import java.util.UUID
+
+android {
+    namespace 'com.yaad.reminder'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.yaad.reminder"
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName "1.0.0"
+
+        testInstrumentationRunner "androidx.test.runner.AndroidJUnitRunner"
+        vectorDrawables {
+            useSupportLibrary true
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+
+    kotlinOptions {
+        jvmTarget = '17'
+    }
+
+    buildFeatures {
+        compose true
+    }
+
+    composeOptions {
+        kotlinCompilerExtensionVersion '1.5.14'
+    }
+
+    androidResources {
+        noCompress 'mdl', 'fst', 'conf', 'ivector', 'final.mdl', 'Gr.fst', 'HCLr.fst'
+    }
+
+    packaging {
+        resources {
+            excludes += '/META-INF/{AL2.0,LGPL2.1}'
+        }
+    }
+}
+
+/**
+ * Custom Gradle task that automatically downloads the lightweight Persian Vosk model
+ * (vosk-model-small-fa-0.4), extracts it, and places its contents into src/main/assets/model
+ * before the Android build completes.
+ */
+tasks.register('downloadVoskPersianModel') {
+    def modelUrl = 'https://alphacephei.com/vosk/models/vosk-model-small-fa-0.4.zip'
+    def assetsModelDir = file("${projectDir}/src/main/assets/model")
+    def tempZipFile = file("${buildDir}/tmp/vosk-model-small-fa-0.4.zip")
+    def tempExtractDir = file("${buildDir}/tmp/vosk-extracted")
+
+    outputs.dir(assetsModelDir)
+
+    doLast {
+        if (new File(assetsModelDir, 'conf').exists() && new File(assetsModelDir, 'uuid').exists()) {
+            logger.lifecycle("Vosk Persian model already present at: ${assetsModelDir.absolutePath}")
+            return
+        }
+
+        logger.lifecycle("Downloading Vosk Persian model from ${modelUrl} ...")
+        tempZipFile.parentFile.mkdirs()
+        new URL(modelUrl).withInputStream { input ->
+            tempZipFile.withOutputStream { output ->
+                output << input
+            }
+        }
+
+        logger.lifecycle("Extracting Vosk Persian model archive...")
+        tempExtractDir.deleteDir()
+        copy {
+            from zipTree(tempZipFile)
+            into tempExtractDir
+        }
+
+        assetsModelDir.deleteDir()
+        assetsModelDir.mkdirs()
+
+        def extractedModelFolder = new File(tempExtractDir, 'vosk-model-small-fa-0.4')
+        copy {
+            from extractedModelFolder
+            into assetsModelDir
+        }
+
+        // Vosk Android StorageService.unpack requires a 'uuid' file inside the asset model directory
+        new File(assetsModelDir, 'uuid').text = UUID.randomUUID().toString()
+        logger.lifecycle("Vosk Persian model successfully installed in: ${assetsModelDir.absolutePath}")
+    }
+}
+
+tasks.named('preBuild').configure {
+    dependsOn tasks.named('downloadVoskPersianModel')
+}
+
+dependencies {
+    implementation 'androidx.core:core-ktx:1.13.1'
+    implementation 'androidx.lifecycle:lifecycle-runtime-ktx:2.8.4'
+    implementation 'androidx.lifecycle:lifecycle-viewmodel-ktx:2.8.4'
+    implementation 'androidx.lifecycle:lifecycle-viewmodel-compose:2.8.4'
+    implementation 'androidx.lifecycle:lifecycle-runtime-compose:2.8.4'
+    implementation 'androidx.activity:activity-compose:1.9.1'
+
+    // Jetpack Compose Minimalist UI
+    implementation platform('androidx.compose:compose-bom:2024.06.00')
+    implementation 'androidx.compose.ui:ui'
+    implementation 'androidx.compose.ui:ui-graphics'
+    implementation 'androidx.compose.ui:ui-tooling-preview'
+    implementation 'androidx.compose.material3:material3'
+    implementation 'androidx.compose.material:material-icons-extended'
+
+    // Local Database: Room + Kotlin Coroutines & Flow
+    def roomVersion = '2.6.1'
+    implementation "androidx.room:room-runtime:${roomVersion}"
+    implementation "androidx.room:room-ktx:${roomVersion}"
+    ksp "androidx.room:room-compiler:${roomVersion}"
+
+    // Kotlin Coroutines
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-core:1.8.1'
+    implementation 'org.jetbrains.kotlinx:kotlinx-coroutines-android:1.8.1'
+
+    // Offline Speech-to-Text: Vosk Android Library (exclude desktop JNA jar to avoid duplicate classes with JNA AAR)
+    implementation('com.alphacephei:vosk-android:0.3.47') {
+        exclude group: 'net.java.dev.jna', module: 'jna'
+    }
+    implementation 'net.java.dev.jna:jna:5.13.0@aar'
+
+    // Unit Testing
+    testImplementation 'junit:junit:4.13.2'
+}
